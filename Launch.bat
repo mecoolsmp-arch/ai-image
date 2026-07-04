@@ -52,7 +52,7 @@ REM RTX 3070 / Ampere: scope --fast to fp16_accumulation (real Ampere speedup);
 REM fp8_matrix_mult is a no-op on Ampere. --reserve-vram leaves headroom for the
 REM Windows display to avoid OOM/offload stalls. --fast-disk speeds offload on NVMe.
 echo Starting ComfyUI...
-start "ComfyUI" /b python "ComfyUI\main.py" --listen %COMFYUI_HOST% --port %COMFYUI_PORT% --fast fp16_accumulation --reserve-vram 0.8 --fast-disk %SAGE_FLAG% %EXTRA_FLAGS%
+start "ComfyUI" /b python "ComfyUI\main.py" --listen %COMFYUI_HOST% --port %COMFYUI_PORT% --fast fp16_accumulation --reserve-vram 0.8 --fast-disk --preview-method latent2rgb %SAGE_FLAG% %EXTRA_FLAGS%
 
 echo Waiting for ComfyUI to become ready...
 python -c "from comfyui_app.comfy_client import ComfyClient; from comfyui_app.config import COMFYUI_HOST, COMFYUI_PORT; ComfyClient(COMFYUI_HOST, COMFYUI_PORT).wait_until_up(timeout=180)"

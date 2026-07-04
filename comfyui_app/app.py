@@ -3,11 +3,20 @@
 import logging
 import os
 import shutil
+import threading
 import warnings
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from queue import Queue
 
+try:
+    from starlette.exceptions import StarletteDeprecationWarning
+except Exception:  # pragma: no cover - optional dependency
+    StarletteDeprecationWarning = None  # type: ignore[assignment]
+
+if StarletteDeprecationWarning is not None:
+    warnings.filterwarnings("ignore", category=StarletteDeprecationWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning, message=r".*HTTP_422_UNPROCESSABLE_ENTITY.*")
 warnings.filterwarnings("ignore", category=DeprecationWarning, message=r".*local_dir_use_symlinks.*")
 warnings.filterwarnings("ignore", category=DeprecationWarning, message=r".*resume_download.*")
@@ -51,6 +60,14 @@ def _friendly_error(exc: Exception) -> str:
         return exc.message
     message = str(exc).strip()
     return message or exc.__class__.__name__
+
+
+def _as_gr_image(value: object | None) -> object | None:
+    if value is None:
+        return None
+    if isinstance(value, Path):
+        return str(value)
+    return value
 
 
 def _component_path(value: object) -> Path:
@@ -154,7 +171,8 @@ def _edit_handler(
     mrflow: bool,
     depth_lock: bool,
     depth_fp8_base: bool,
-) -> tuple[str | None, str | None, str]:
+    live_preview: bool,
+) -> object:
     try:
         input_path = _component_path(input_image)
         reference_path = _optional_component_path(reference_image)
@@ -169,8 +187,9 @@ def _edit_handler(
                 use_fp8_base=bool(depth_fp8_base),
                 megapixels=float(megapixels),
             )
-            return str(result.image_path), str(result.preview_path) if result.preview_path is not None else None, result.status
-        else:
+            yield str(result.image_path), None, _as_gr_image(result.preview_path), result.status
+            return
+        if not live_preview or bool(mrflow):
             result = run_edit(
                 input_path,
                 prompt,
@@ -184,9 +203,54 @@ def _edit_handler(
                 use_torch_compile=bool(use_torch_compile),
                 mrflow=bool(mrflow),
             )
-            return str(result.image_path), None, result.status
+            yield str(result.image_path), None, None, result.status
+            return
+
+        queue: Queue[object] = Queue()
+        sentinel = object()
+        state: dict[str, object] = {}
+
+        def preview_callback(image: object) -> None:
+            queue.put(image)
+
+        def worker() -> None:
+            try:
+                state["result"] = run_edit(
+                    input_path,
+                    prompt,
+                    negative,
+                    output_dir,
+                    steps=int(steps),
+                    cfg=float(cfg),
+                    seed=int(seed),
+                    megapixels=float(megapixels),
+                    engine=engine,
+                    use_torch_compile=bool(use_torch_compile),
+                    mrflow=bool(mrflow),
+                    preview_callback=preview_callback,
+                )
+            except Exception as exc:
+                state["exc"] = exc
+            finally:
+                queue.put(sentinel)
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        last_preview: object | None = None
+        while True:
+            item = queue.get()
+            if item is sentinel:
+                break
+            last_preview = item
+            yield None, last_preview, None, "Rendering preview..."
+        thread.join()
+        if "exc" in state:
+            yield None, None, None, _friendly_error(state["exc"])  # type: ignore[arg-type]
+            return
+        result = state["result"]  # type: ignore[assignment]
+        yield str(result.image_path), last_preview, None, result.status
     except Exception as exc:
-        return None, None, _friendly_error(exc)
+        yield None, None, None, _friendly_error(exc)
 
 
 def _t2i_handler(
@@ -201,24 +265,71 @@ def _t2i_handler(
     engine: str,
     use_torch_compile: bool,
     mrflow: bool,
-) -> tuple[str | None, str]:
+    live_preview: bool,
+) -> object:
     try:
-        result = run_t2i(
-            prompt=prompt,
-            negative=negative,
-            output_dir=output_dir,
-            width=int(width),
-            height=int(height),
-            steps=int(steps),
-            cfg=float(cfg),
-            seed=int(seed),
-            engine=engine,
-            use_torch_compile=bool(use_torch_compile),
-            mrflow=bool(mrflow),
-        )
-        return str(result.image_path), result.status
+        if not live_preview:
+            result = run_t2i(
+                prompt=prompt,
+                negative=negative,
+                output_dir=output_dir,
+                width=int(width),
+                height=int(height),
+                steps=int(steps),
+                cfg=float(cfg),
+                seed=int(seed),
+                engine=engine,
+                use_torch_compile=bool(use_torch_compile),
+                mrflow=bool(mrflow),
+            )
+            yield str(result.image_path), None, result.status
+            return
+
+        queue: Queue[object] = Queue()
+        sentinel = object()
+        state: dict[str, object] = {}
+
+        def preview_callback(image: object) -> None:
+            queue.put(image)
+
+        def worker() -> None:
+            try:
+                state["result"] = run_t2i(
+                    prompt=prompt,
+                    negative=negative,
+                    output_dir=output_dir,
+                    width=int(width),
+                    height=int(height),
+                    steps=int(steps),
+                    cfg=float(cfg),
+                    seed=int(seed),
+                    engine=engine,
+                    use_torch_compile=bool(use_torch_compile),
+                    mrflow=bool(mrflow),
+                    preview_callback=preview_callback,
+                )
+            except Exception as exc:
+                state["exc"] = exc
+            finally:
+                queue.put(sentinel)
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        last_preview: object | None = None
+        while True:
+            item = queue.get()
+            if item is sentinel:
+                break
+            last_preview = item
+            yield None, last_preview, "Rendering preview..."
+        thread.join()
+        if "exc" in state:
+            yield None, None, _friendly_error(state["exc"])  # type: ignore[arg-type]
+            return
+        result = state["result"]  # type: ignore[assignment]
+        yield str(result.image_path), last_preview, result.status
     except Exception as exc:
-        return None, _friendly_error(exc)
+        yield None, None, _friendly_error(exc)
 
 
 def _upscale_handler(
@@ -440,6 +551,8 @@ def build_app() -> "gr.Blocks":
                     edit_megapixels = gr.Number(label="Megapixels", value=1.0)
                     edit_seed = gr.Number(label="Seed", value=0, precision=0)
                     edit_engine = gr.Dropdown(label="Engine", choices=ENGINE_CHOICES, value=DEFAULT_ENGINE_VALUE)
+                    edit_live_preview = gr.Checkbox(label="Show live preview", value=False)
+                    edit_live_preview_image = gr.Image(label="Live preview", visible=False)
                     edit_compile = gr.Checkbox(
                         label="torch.compile (requires Triton from experimental speedups; limited gain on Ampere; faster after warmup, slower first run, recompiles on resolution change)",
                         value=False,
@@ -458,13 +571,18 @@ def build_app() -> "gr.Blocks":
                     edit_status = gr.Textbox(label="Status")
             edit_run = edit_button.click(
                 fn=_edit_handler,
-                inputs=[edit_image, edit_reference, edit_prompt, edit_negative, edit_output, edit_steps, edit_cfg, edit_megapixels, edit_seed, edit_engine, edit_compile, edit_mrflow, edit_depth_lock, edit_depth_fp8_base],
-                outputs=[edit_result, edit_depth_preview, edit_status],
+                inputs=[edit_image, edit_reference, edit_prompt, edit_negative, edit_output, edit_steps, edit_cfg, edit_megapixels, edit_seed, edit_engine, edit_compile, edit_mrflow, edit_depth_lock, edit_depth_fp8_base, edit_live_preview],
+                outputs=[edit_result, edit_live_preview_image, edit_depth_preview, edit_status],
             )
             edit_depth_lock.change(
                 fn=lambda enabled: (gr.update(visible=bool(enabled)), gr.update(visible=bool(enabled)), gr.update(visible=bool(enabled)), gr.update(visible=bool(enabled))),
                 inputs=[edit_depth_lock],
                 outputs=[edit_reference, edit_depth_note, edit_depth_preview, edit_depth_fp8_base],
+            )
+            edit_live_preview.change(
+                fn=lambda enabled: gr.update(visible=bool(enabled)),
+                inputs=[edit_live_preview],
+                outputs=[edit_live_preview_image],
             )
             edit_stop.click(fn=_stop_current_job, outputs=edit_status, cancels=[edit_run])
 
@@ -554,6 +672,8 @@ def build_app() -> "gr.Blocks":
                     t2i_cfg = gr.Number(label="Guidance", value=1.0)
                     t2i_seed = gr.Number(label="Seed", value=0, precision=0)
                     t2i_engine = gr.Dropdown(label="Engine", choices=ENGINE_CHOICES, value=DEFAULT_ENGINE_VALUE)
+                    t2i_live_preview = gr.Checkbox(label="Show live preview", value=False)
+                    t2i_live_preview_image = gr.Image(label="Live preview", visible=False)
                     t2i_compile = gr.Checkbox(
                         label="torch.compile (requires Triton from experimental speedups; limited gain on Ampere; faster after warmup, slower first run, recompiles on resolution change)",
                         value=False,
@@ -568,8 +688,13 @@ def build_app() -> "gr.Blocks":
                     t2i_status = gr.Textbox(label="Status")
             t2i_evt = t2i_button.click(
                 fn=_t2i_handler,
-                inputs=[t2i_prompt, t2i_negative, t2i_output, t2i_width, t2i_height, t2i_steps, t2i_cfg, t2i_seed, t2i_engine, t2i_compile, t2i_mrflow],
-                outputs=[t2i_result, t2i_status],
+                inputs=[t2i_prompt, t2i_negative, t2i_output, t2i_width, t2i_height, t2i_steps, t2i_cfg, t2i_seed, t2i_engine, t2i_compile, t2i_mrflow, t2i_live_preview],
+                outputs=[t2i_result, t2i_live_preview_image, t2i_status],
+            )
+            t2i_live_preview.change(
+                fn=lambda enabled: gr.update(visible=bool(enabled)),
+                inputs=[t2i_live_preview],
+                outputs=[t2i_live_preview_image],
             )
             t2i_stop.click(fn=_stop_current_job, outputs=t2i_status, cancels=[t2i_evt])
 

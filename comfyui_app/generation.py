@@ -5,7 +5,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 
 try:
     from PIL import Image
@@ -159,10 +159,11 @@ def _run_prompt(
     output_dir: Path,
     output_name: str,
     timeout: float,
+    preview_callback: Callable[[object], None] | None = None,
 ) -> GenerationResult:
     client.wait_until_up(timeout=timeout)
     prompt_id = client.queue_prompt(prompt_dict, client.client_id)
-    client.wait_for_completion(prompt_id, client.client_id, timeout=timeout)
+    client.wait_for_completion(prompt_id, client.client_id, timeout=timeout, preview_callback=preview_callback)
     images = client.get_images(prompt_id)
     image_path = _save_first_image(images, output_dir, output_name)
     return GenerationResult(image_path=image_path, status=f"Saved image to {image_path}.", prompt_id=prompt_id)
@@ -193,6 +194,7 @@ def run_edit(
     mrflow_refine_denoise: float = 0.25,
     mrflow_upscale_model_name: str = "RealESRGAN_x2plus.pth",
     client: ComfyClient | None = None,
+    preview_callback: Callable[[object], None] | None = None,
 ) -> GenerationResult:
     client = client or ComfyClient(COMFYUI_HOST, COMFYUI_PORT)
     input_path = Path(input_image_path)
@@ -247,7 +249,7 @@ def run_edit(
         )
     output_name = _output_name(input_path, "edit", seed)
     try:
-        return _run_prompt(client, prompt_dict, target_dir, output_name, timeout)
+        return _run_prompt(client, prompt_dict, target_dir, output_name, timeout, preview_callback=preview_callback)
     except Exception as exc:
         if engine == "default" and not prefer_gguf and _retryable_oom(str(exc)):
             logger.warning("Switching to GGUF fallback after a memory error.")
@@ -284,7 +286,7 @@ def run_edit(
                     }
                 )
             prompt_dict = builder(**builder_kwargs)
-            return _run_prompt(client, prompt_dict, target_dir, output_name, timeout)
+            return _run_prompt(client, prompt_dict, target_dir, output_name, timeout, preview_callback=preview_callback)
         raise
 
 
@@ -313,6 +315,7 @@ def run_t2i(
     mrflow_refine_denoise: float = 0.25,
     mrflow_upscale_model_name: str = "RealESRGAN_x2plus.pth",
     client: ComfyClient | None = None,
+    preview_callback: Callable[[object], None] | None = None,
 ) -> GenerationResult:
     client = client or ComfyClient(COMFYUI_HOST, COMFYUI_PORT)
     target_dir = Path(output_dir)
@@ -363,7 +366,7 @@ def run_t2i(
         )
     output_name = _output_name(None, "t2i", seed)
     try:
-        return _run_prompt(client, prompt_dict, target_dir, output_name, timeout)
+        return _run_prompt(client, prompt_dict, target_dir, output_name, timeout, preview_callback=preview_callback)
     except Exception as exc:
         if engine == "default" and not prefer_gguf and _retryable_oom(str(exc)):
             logger.warning("Switching to GGUF fallback after a memory error.")
@@ -398,7 +401,7 @@ def run_t2i(
                     }
                 )
             prompt_dict = builder(**builder_kwargs)
-            return _run_prompt(client, prompt_dict, target_dir, output_name, timeout)
+            return _run_prompt(client, prompt_dict, target_dir, output_name, timeout, preview_callback=preview_callback)
         raise
 
 

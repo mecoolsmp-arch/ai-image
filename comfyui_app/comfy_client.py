@@ -4,9 +4,11 @@ from dataclasses import dataclass
 import io
 import json
 import logging
+import struct
 import time
 import uuid
 from pathlib import Path
+from typing import Callable
 
 try:
     from PIL import Image
@@ -91,16 +93,28 @@ class ComfyClient:
                     return prompt_id
         raise RuntimeError("ComfyUI did not return a prompt id.")
 
-    def wait_for_completion(self, prompt_id: str, client_id: str | None = None, timeout: float = 600.0) -> None:
+    def wait_for_completion(
+        self,
+        prompt_id: str,
+        client_id: str | None = None,
+        timeout: float = 600.0,
+        preview_callback: Callable[[object], None] | None = None,
+    ) -> None:
         if create_connection is not None:
             try:
-                self._wait_with_websocket(prompt_id, client_id or self.client_id, timeout)
+                self._wait_with_websocket(prompt_id, client_id or self.client_id, timeout, preview_callback=preview_callback)
                 return
             except Exception as exc:
                 logger.debug("Websocket wait failed; falling back to polling: %s", exc)
         self._wait_with_polling(prompt_id, timeout)
 
-    def _wait_with_websocket(self, prompt_id: str, client_id: str, timeout: float) -> None:
+    def _wait_with_websocket(
+        self,
+        prompt_id: str,
+        client_id: str,
+        timeout: float,
+        preview_callback: Callable[[object], None] | None = None,
+    ) -> None:
         if create_connection is None:
             raise RuntimeError("websocket-client is not installed.")
         ws = create_connection(f"{self.ws_url}?clientId={client_id}", timeout=timeout)
@@ -109,6 +123,14 @@ class ComfyClient:
             while time.monotonic() < deadline:
                 message = ws.recv()
                 if not message:
+                    continue
+                if isinstance(message, (bytes, bytearray, memoryview)):
+                    preview_image = self._decode_preview_bytes(bytes(message))
+                    if preview_image is not None and preview_callback is not None:
+                        try:
+                            preview_callback(preview_image)
+                        except Exception:
+                            logger.debug("Preview callback failed", exc_info=True)
                     continue
                 data = self._parse_json(message)
                 if not isinstance(data, dict):
@@ -120,6 +142,24 @@ class ComfyClient:
             raise RuntimeError(f"ComfyUI did not finish prompt {prompt_id} within the timeout.")
         finally:
             ws.close()
+
+    def _decode_preview_bytes(self, payload: bytes) -> object | None:
+        if Image is None or len(payload) <= 8:
+            return None
+        try:
+            event_type = struct.unpack(">I", payload[:4])[0]
+            image_type = struct.unpack(">I", payload[4:8])[0]
+        except struct.error:
+            return None
+        if event_type not in (1, 2):
+            return None
+        if image_type not in (1, 2):
+            return None
+        try:
+            return Image.open(io.BytesIO(payload[8:])).convert("RGB")
+        except Exception:
+            logger.debug("Failed to decode ComfyUI preview frame", exc_info=True)
+            return None
 
     def _wait_with_polling(self, prompt_id: str, timeout: float) -> None:
         self._require_requests()

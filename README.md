@@ -53,6 +53,7 @@ ComfyUI itself listens on `127.0.0.1:8188`.
 - **Video Upscale** - upscale a whole video and write an H.264/AAC `.mp4` output.
 
 Each tab has an output folder `Browse...` button, and the long-running tabs have a `Stop` button for cancellation.
+The Text-to-Image and Image Edit tabs also have an optional **Show live preview** toggle that streams ComfyUI websocket preview frames while a job is sampling.
 
 ## Model layout
 

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import io
+import json
+import struct
 from pathlib import Path
 
 from comfyui_app import app, batch, video_frames
+from comfyui_app import comfy_client
 from comfyui_app.generation import GenerationResult
 from comfyui_app.workflow_builder import build_esrgan_upscale_prompt, build_rtx_upscale_prompt
 
@@ -130,6 +134,36 @@ def test_build_frames_to_video_command_omits_audio_when_missing(monkeypatch) -> 
     assert command[-1] == "out.mp4"
 
 
+def test_comfy_client_surfaces_live_preview_frames(monkeypatch) -> None:
+    from PIL import Image
+
+    preview = io.BytesIO()
+    Image.new("RGB", (4, 4), color="red").save(preview, format="PNG")
+    payload = struct.pack(">II", 1, 2) + preview.getvalue()
+
+    class FakeWS:
+        def __init__(self) -> None:
+            self.messages = [
+                payload,
+                json.dumps({"type": "executing", "data": {"prompt_id": "p1", "node": None}}),
+            ]
+
+        def recv(self):
+            return self.messages.pop(0)
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(comfy_client, "create_connection", lambda *args, **kwargs: FakeWS())
+    client = comfy_client.ComfyClient("127.0.0.1", 8188)
+    previews: list[object] = []
+
+    client.wait_for_completion("p1", preview_callback=previews.append)
+
+    assert len(previews) == 1
+    assert previews[0].size == (4, 4)
+
+
 def test_image_edit_handler_routes_to_depth_path_only_when_enabled(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
 
@@ -144,13 +178,13 @@ def test_image_edit_handler_routes_to_depth_path_only_when_enabled(monkeypatch) 
     monkeypatch.setattr(app, "run_edit", fake_run_edit)
     monkeypatch.setattr(app, "run_depth_edit", fake_run_depth_edit)
 
-    result = app._edit_handler("input.png", None, "prompt", "negative", "out", 4, 1.0, 1.0, 0, "default", False, False, False, False)
-    assert result == ("edit.png", None, "edit")
+    result = list(app._edit_handler("input.png", None, "prompt", "negative", "out", 4, 1.0, 1.0, 0, "default", False, False, False, False, False))
+    assert result == [("edit.png", None, None, "edit")]
     assert calls[0][0] == "edit"
 
     calls.clear()
-    result = app._edit_handler("input.png", "reference.png", "prompt", "negative", "out", 4, 1.0, 1.0, 0, "default", False, False, True, False)
-    assert result == ("depth.png", "depth-map.png", "depth")
+    result = list(app._edit_handler("input.png", "reference.png", "prompt", "negative", "out", 4, 1.0, 1.0, 0, "default", False, False, True, False, False))
+    assert result == [("depth.png", None, "depth-map.png", "depth")]
     assert calls[0][0] == "depth"
 
 
@@ -167,6 +201,22 @@ def test_app_exposes_depth_fp8_fallback_checkbox() -> None:
         if isinstance(component, dict)
     ]
     assert "Use fp8 base instead (fallback if INT8 quality looks off)" in labels
+
+
+def test_t2i_handler_streams_preview_then_final(monkeypatch) -> None:
+    def fake_run_t2i(*args, preview_callback=None, **kwargs):
+        if preview_callback is not None:
+            preview_callback("preview-1")
+            preview_callback("preview-2")
+        return GenerationResult(image_path=Path("final.png"), status="done")
+
+    monkeypatch.setattr(app, "run_t2i", fake_run_t2i)
+
+    events = list(app._t2i_handler("prompt", "negative", "out", 1024, 1024, 4, 1.0, 0, "default", False, False, True))
+
+    assert events[0] == (None, "preview-1", "Rendering preview...")
+    assert events[1] == (None, "preview-2", "Rendering preview...")
+    assert events[-1] == ("final.png", "preview-2", "done")
 
 
 def test_run_depth_edit_uses_requested_base_variant(monkeypatch, tmp_path: Path) -> None:
