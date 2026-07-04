@@ -30,6 +30,14 @@ if errorlevel 1 (
   exit /b 1
 )
 
+REM Load HF_TOKEN from .env so the ComfyUI subprocess (and its custom nodes)
+REM download models authenticated (higher rate limits + xet acceleration).
+if exist ".env" (
+  for /f "usebackq eol=# tokens=1,* delims==" %%A in (".env") do (
+    if /I "%%A"=="HF_TOKEN" set "HF_TOKEN=%%B"
+  )
+)
+
 set "COMFYUI_HOST=127.0.0.1"
 set "COMFYUI_PORT=8188"
 set "COMFYUI_UI_HOST=127.0.0.1"
