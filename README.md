@@ -84,7 +84,7 @@ repo/
 │   ├── models/
 │   │   ├── diffusion_models/        # flux-2-klein-4b-fp8.safetensors (or GGUF)
 │   │   ├── text_encoders/           # qwen_3_4b_fp4_flux2.safetensors (or full)
-│   │   └── vae/                     # flux2-vae.safetensors
+│   │   └── vae/                     # full_encoder_small_decoder.safetensors (or flux2-vae)
 │   └── custom_nodes/                # ComfyUI-GGUF, ComfyUI-Manager
 ├── comfyui_app/
 │   ├── workflows/                   # flux2_klein_edit.json, flux2_klein_t2i.json
@@ -113,9 +113,10 @@ recorded in `resolved_models.json` (repo, remote path, size, sha) so unchanged
 files are skipped on re-run. Gated/expired-token/unaccepted-license failures are
 reported in plain language with the exact model page to visit.
 
-The resolver also **probes for a tiny/"small" VAE decoder** (e.g. a future
-`taef2`-style tiny autoencoder) and prefers it automatically if one is ever
-published. See the VAE note below.
+For the VAE, the resolver **defaults to BFL's distilled small decoder**
+(`black-forest-labs/FLUX.2-small-decoder`) and falls back to
+`Comfy-Org/flux2-klein-4B`'s `flux2-vae.safetensors` only if that lookup fails.
+See the VAE note below.
 
 ### RTX 3070 (8 GB) optimization — what was chosen and why
 
@@ -124,15 +125,15 @@ resolver lands in the **7–9 GB** tier:
 
 | Setting | Choice for 8 GB | Why |
 | --- | --- | --- |
-| Diffusion model | `flux-2-klein-4b-fp8.safetensors` (~4.0 GB) | fp8 halves the weight footprint vs bf16 (~7.75 GB) and pairs with ComfyUI's `--fast` fp8 matmul path. The distilled Klein 4B needs ~8.4 GB total; fp8 + ComfyUI's smart offload fits 8 GB. |
+| Diffusion model | `flux-2-klein-4b-fp8.safetensors` (~4.0 GB) | fp8 halves the weight footprint vs bf16 (~7.75 GB) so Klein fits in 8 GB with ComfyUI's smart offload. Note: the RTX 3070 (Ampere) has **no fp8 tensor cores** — fp8 is a VRAM win here, not a compute speedup (fp8 matmul acceleration starts at Ada/40-series). Because offloading is the main slowdown on 8 GB, a GGUF Q5/Q4 that stays fully resident can be *faster* end-to-end; see the GGUF fallback row. |
 | Diffusion fallback | GGUF `Q4_K_M` (~2.6 GB), then `Q3`/`Q2` | If fp8 OOMs, the app automatically retries with a lighter GGUF quant via the `UnetLoaderGGUF` node (ComfyUI-GGUF). Q4_K_M keeps most quality at ~2.6 GB. |
 | Text encoder | `qwen_3_4b_fp4_flux2.safetensors` (~3.85 GB) | The full Qwen3-4B encoder is ~8 GB and won't co-reside; the fp4 build is half the size. ComfyUI runs the encoder, frees it, then loads the diffusion model, so peak VRAM stays manageable. |
-| VAE | `flux2-vae.safetensors` (~0.34 GB) | This is FLUX.2's compact VAE (see note). |
+| VAE | `full_encoder_small_decoder.safetensors` (~0.25 GB) | BFL's distilled small decoder: ~1.4× faster decode and ~1.4× less VRAM than the standard `flux2-vae`, minimal quality loss. Full standard encoder is retained for the edit/video/batch encode path. `flux2-vae.safetensors` is the automatic fallback. |
 | Decode | `VAEDecodeTiled` | Tiled decode caps peak VRAM during decode on 8 GB, preventing end-of-run OOM at higher resolutions. |
 | Sampler / scheduler | `euler` + `Flux2Scheduler` | Matches the official distilled Klein template. |
 | Steps | `4` | Distilled Klein is a 4-step model; more steps waste time without quality gains. |
 | Guidance (CFG) | `1.0` | Distilled Klein uses CFG 1. See the negative-prompt note below. |
-| Launch flags | `--fast`, `--use-sage-attention` (if installed) | `--fast` enables the fp8 fast path; SageAttention gives a 2–5× attention speedup. `--lowvram` is added only on the sub-7 GB tiers. |
+| Launch flags | `--fast fp16_accumulation --reserve-vram 0.8 --fast-disk`, `--use-sage-attention` (if installed) | `--fast` is scoped to `fp16_accumulation` (the feature that actually speeds up Ampere; bare `--fast` also enables `fp8_matrix_mult`, a no-op on the 3070 that can degrade quality). `--reserve-vram 0.8` leaves headroom for the Windows display to avoid OOM/offload stalls. `--fast-disk` speeds the unavoidable offload on NVMe SSDs (drop it if models live on an HDD). SageAttention gives a 2–5× INT8 attention speedup on Ampere. `--lowvram` is added only on the sub-7 GB tiers. |
 
 Sources / references:
 
@@ -147,11 +148,17 @@ Sources / references:
 
 ### Notes / limitations
 
-- **"Small VAE decoder":** FLUX.2 does not (yet) ship a separate tiny/distilled
-  decoder (there is no `taef2` equivalent). `flux2-vae.safetensors` **is** the
-  compact VAE (only ~340 MB), and on 8 GB the app uses `VAEDecodeTiled` for the
-  fastest, lowest-peak-VRAM decode. The resolver auto-prefers a tiny decoder if
-  one is ever released.
+- **Small VAE decoder:** the app defaults to BFL's distilled
+  `black-forest-labs/FLUX.2-small-decoder`
+  (`full_encoder_small_decoder.safetensors`) — ~1.4× faster decode and ~1.4×
+  less VRAM than the standard `flux2-vae` decoder, with minimal quality loss —
+  combined with `VAEDecodeTiled` for the lowest peak VRAM on 8 GB.
+  `flux2-vae.safetensors` is the automatic fallback if the small-decoder repo
+  can't be resolved.
+- **fp8 on the RTX 3070:** fp8 saves VRAM but does **not** accelerate compute on
+  Ampere (no fp8 tensor cores). On 8 GB the dominant cost is weight offloading,
+  so if you want more speed, try the GGUF path (Q5_K_M/Q4_K_M) which can keep the
+  model fully resident and avoid offload.
 - **Negative prompt on the distilled model:** the distilled Klein workflow runs
   at CFG 1.0, where the negative branch is mathematically ignored. The negative
   prompt field is still wired end-to-end (and shared across batch) so it takes
