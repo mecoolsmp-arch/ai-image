@@ -11,7 +11,7 @@ from comfyui_app.comfy_client import ComfyClient
 from comfyui_app.config import COMFYUI_HOST, COMFYUI_PORT, get_hf_token
 from comfyui_app.model_resolver import ModelResolverError, download_models, load_resolved_manifest, resolve_models
 from comfyui_app.vram import detect_vram, select_tier
-from comfyui_app.workflow_builder import build_edit_prompt, build_t2i_prompt
+from comfyui_app.workflow_builder import build_edit_prompt, build_mrflow_edit_prompt, build_mrflow_t2i_prompt, build_t2i_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +40,12 @@ def _manifest_models(
             manifest = None
     if isinstance(manifest, dict):
         models = manifest.get("models")
-        if isinstance(models, dict) and {"diffusion", "text_encoder", "vae"} <= set(models):
+        if isinstance(models, dict) and {"diffusion", "text_encoder", "vae", "upscale"} <= set(models):
             cached = {
                 "diffusion": dict(models["diffusion"]),
                 "text_encoder": dict(models["text_encoder"]),
                 "vae": dict(models["vae"]),
+                "upscale": dict(models["upscale"]),
             }
             if not (prefer_gguf and not str(cached["diffusion"].get("local_filename", "")).lower().endswith(".gguf")):
                 cached_paths = [Path(str(item.get("dest_dir", ""))) / str(item.get("local_filename", "")) for item in cached.values()]
@@ -77,11 +78,7 @@ def _retryable_oom(message: str) -> bool:
 
 def _resolved_filename_map(vram_gb: float, prefer_gguf: bool, engine: str) -> dict[str, str]:
     resolved = _manifest_models(vram_gb, get_hf_token(), prefer_gguf=prefer_gguf, engine=engine)
-    return {
-        "diffusion": str(resolved["diffusion"]["local_filename"]),
-        "text_encoder": str(resolved["text_encoder"]["local_filename"]),
-        "vae": str(resolved["vae"]["local_filename"]),
-    }
+    return {name: str(info["local_filename"]) for name, info in resolved.items()}
 
 
 def _run_prompt(
@@ -116,6 +113,13 @@ def run_edit(
     prefer_gguf: bool = False,
     engine: str = "default",
     use_torch_compile: bool = False,
+    mrflow: bool = False,
+    mrflow_low_width: int = 512,
+    mrflow_low_height: int = 512,
+    mrflow_stage1_steps: int = 4,
+    mrflow_refine_steps: int = 1,
+    mrflow_refine_denoise: float = 0.25,
+    mrflow_upscale_model_name: str = "RealESRGAN_x2plus.pth",
     client: ComfyClient | None = None,
 ) -> GenerationResult:
     client = client or ComfyClient(COMFYUI_HOST, COMFYUI_PORT)
@@ -125,23 +129,50 @@ def run_edit(
     tier = select_tier(vram_gb)
     filenames = _resolved_filename_map(vram_gb, prefer_gguf, engine)
     uploaded_name = client.upload_image(input_path)
-    prompt_dict = build_edit_prompt(
-        diffusion_model=filenames["diffusion"],
-        text_encoder_model=filenames["text_encoder"],
-        vae_model=filenames["vae"],
-        prompt=prompt,
-        negative=negative,
-        seed=seed,
-        steps=steps,
-        cfg=cfg,
-        megapixels=megapixels,
-        input_image_name=uploaded_name,
-        batch_size=batch_size,
-        use_tiled_decode=tier.use_tiled_decode if use_tiled_decode is None else use_tiled_decode,
-        decode_tile_size=decode_tile_size,
-        engine=engine,
-        use_torch_compile=use_torch_compile,
-    )
+    if mrflow:
+        prompt_dict = build_mrflow_edit_prompt(
+            diffusion_model=filenames["diffusion"],
+            text_encoder_model=filenames["text_encoder"],
+            vae_model=filenames["vae"],
+            upscale_model_name=filenames["upscale"],
+            prompt=prompt,
+            negative=negative,
+            seed=seed,
+            steps=steps,
+            stage1_steps=mrflow_stage1_steps,
+            refine_steps=mrflow_refine_steps,
+            refine_denoise=mrflow_refine_denoise,
+            low_width=mrflow_low_width,
+            low_height=mrflow_low_height,
+            width=0,
+            height=0,
+            cfg=cfg,
+            megapixels=megapixels,
+            input_image_name=uploaded_name,
+            batch_size=batch_size,
+            use_tiled_decode=tier.use_tiled_decode if use_tiled_decode is None else use_tiled_decode,
+            decode_tile_size=decode_tile_size,
+            engine=engine,
+            use_torch_compile=use_torch_compile,
+        )
+    else:
+        prompt_dict = build_edit_prompt(
+            diffusion_model=filenames["diffusion"],
+            text_encoder_model=filenames["text_encoder"],
+            vae_model=filenames["vae"],
+            prompt=prompt,
+            negative=negative,
+            seed=seed,
+            steps=steps,
+            cfg=cfg,
+            megapixels=megapixels,
+            input_image_name=uploaded_name,
+            batch_size=batch_size,
+            use_tiled_decode=tier.use_tiled_decode if use_tiled_decode is None else use_tiled_decode,
+            decode_tile_size=decode_tile_size,
+            engine=engine,
+            use_torch_compile=use_torch_compile,
+        )
     output_name = _output_name(input_path, "edit", seed)
     try:
         return _run_prompt(client, prompt_dict, target_dir, output_name, timeout)
@@ -149,23 +180,38 @@ def run_edit(
         if engine == "default" and not prefer_gguf and _retryable_oom(str(exc)):
             logger.warning("Switching to GGUF fallback after a memory error.")
             fallback = _resolved_filename_map(vram_gb, True, engine)
-            prompt_dict = build_edit_prompt(
-                diffusion_model=fallback["diffusion"],
-                text_encoder_model=fallback["text_encoder"],
-                vae_model=fallback["vae"],
-                prompt=prompt,
-                negative=negative,
-                seed=seed,
-                steps=steps,
-                cfg=cfg,
-                megapixels=megapixels,
-                input_image_name=uploaded_name,
-                batch_size=batch_size,
-                use_tiled_decode=tier.use_tiled_decode if use_tiled_decode is None else use_tiled_decode,
-                decode_tile_size=decode_tile_size,
-                engine=engine,
-                use_torch_compile=use_torch_compile,
-            )
+            builder = build_mrflow_edit_prompt if mrflow else build_edit_prompt
+            builder_kwargs: dict[str, object] = {
+                "diffusion_model": fallback["diffusion"],
+                "text_encoder_model": fallback["text_encoder"],
+                "vae_model": fallback["vae"],
+                "prompt": prompt,
+                "negative": negative,
+                "seed": seed,
+                "steps": steps,
+                "cfg": cfg,
+                "megapixels": megapixels,
+                "input_image_name": uploaded_name,
+                "batch_size": batch_size,
+                "use_tiled_decode": tier.use_tiled_decode if use_tiled_decode is None else use_tiled_decode,
+                "decode_tile_size": decode_tile_size,
+                "engine": engine,
+                "use_torch_compile": use_torch_compile,
+            }
+            if mrflow:
+                builder_kwargs.update(
+                    {
+                        "upscale_model_name": fallback["upscale"],
+                        "stage1_steps": mrflow_stage1_steps,
+                        "refine_steps": mrflow_refine_steps,
+                        "refine_denoise": mrflow_refine_denoise,
+                        "low_width": mrflow_low_width,
+                        "low_height": mrflow_low_height,
+                        "width": 0,
+                        "height": 0,
+                    }
+                )
+            prompt_dict = builder(**builder_kwargs)
             return _run_prompt(client, prompt_dict, target_dir, output_name, timeout)
         raise
 
@@ -187,6 +233,13 @@ def run_t2i(
     prefer_gguf: bool = False,
     engine: str = "default",
     use_torch_compile: bool = False,
+    mrflow: bool = False,
+    mrflow_low_width: int = 512,
+    mrflow_low_height: int = 512,
+    mrflow_stage1_steps: int = 4,
+    mrflow_refine_steps: int = 1,
+    mrflow_refine_denoise: float = 0.25,
+    mrflow_upscale_model_name: str = "RealESRGAN_x2plus.pth",
     client: ComfyClient | None = None,
 ) -> GenerationResult:
     client = client or ComfyClient(COMFYUI_HOST, COMFYUI_PORT)
@@ -194,23 +247,48 @@ def run_t2i(
     vram_gb, _, _ = detect_vram()
     tier = select_tier(vram_gb)
     filenames = _resolved_filename_map(vram_gb, prefer_gguf, engine)
-    prompt_dict = build_t2i_prompt(
-        diffusion_model=filenames["diffusion"],
-        text_encoder_model=filenames["text_encoder"],
-        vae_model=filenames["vae"],
-        prompt=prompt,
-        negative=negative,
-        seed=seed,
-        steps=steps,
-        cfg=cfg,
-        width=width,
-        height=height,
-        batch_size=batch_size,
-        use_tiled_decode=tier.use_tiled_decode if use_tiled_decode is None else use_tiled_decode,
-        decode_tile_size=decode_tile_size,
-        engine=engine,
-        use_torch_compile=use_torch_compile,
-    )
+    if mrflow:
+        prompt_dict = build_mrflow_t2i_prompt(
+            diffusion_model=filenames["diffusion"],
+            text_encoder_model=filenames["text_encoder"],
+            vae_model=filenames["vae"],
+            upscale_model_name=filenames["upscale"],
+            prompt=prompt,
+            negative=negative,
+            seed=seed,
+            steps=steps,
+            stage1_steps=mrflow_stage1_steps,
+            refine_steps=mrflow_refine_steps,
+            refine_denoise=mrflow_refine_denoise,
+            low_width=mrflow_low_width,
+            low_height=mrflow_low_height,
+            width=width,
+            height=height,
+            cfg=cfg,
+            batch_size=batch_size,
+            use_tiled_decode=tier.use_tiled_decode if use_tiled_decode is None else use_tiled_decode,
+            decode_tile_size=decode_tile_size,
+            engine=engine,
+            use_torch_compile=use_torch_compile,
+        )
+    else:
+        prompt_dict = build_t2i_prompt(
+            diffusion_model=filenames["diffusion"],
+            text_encoder_model=filenames["text_encoder"],
+            vae_model=filenames["vae"],
+            prompt=prompt,
+            negative=negative,
+            seed=seed,
+            steps=steps,
+            cfg=cfg,
+            width=width,
+            height=height,
+            batch_size=batch_size,
+            use_tiled_decode=tier.use_tiled_decode if use_tiled_decode is None else use_tiled_decode,
+            decode_tile_size=decode_tile_size,
+            engine=engine,
+            use_torch_compile=use_torch_compile,
+        )
     output_name = _output_name(None, "t2i", seed)
     try:
         return _run_prompt(client, prompt_dict, target_dir, output_name, timeout)
@@ -218,22 +296,35 @@ def run_t2i(
         if engine == "default" and not prefer_gguf and _retryable_oom(str(exc)):
             logger.warning("Switching to GGUF fallback after a memory error.")
             fallback = _resolved_filename_map(vram_gb, True, engine)
-            prompt_dict = build_t2i_prompt(
-                diffusion_model=fallback["diffusion"],
-                text_encoder_model=fallback["text_encoder"],
-                vae_model=fallback["vae"],
-                prompt=prompt,
-                negative=negative,
-                seed=seed,
-                steps=steps,
-                cfg=cfg,
-                width=width,
-                height=height,
-                batch_size=batch_size,
-                use_tiled_decode=tier.use_tiled_decode if use_tiled_decode is None else use_tiled_decode,
-                decode_tile_size=decode_tile_size,
-                engine=engine,
-                use_torch_compile=use_torch_compile,
-            )
+            builder = build_mrflow_t2i_prompt if mrflow else build_t2i_prompt
+            builder_kwargs: dict[str, object] = {
+                "diffusion_model": fallback["diffusion"],
+                "text_encoder_model": fallback["text_encoder"],
+                "vae_model": fallback["vae"],
+                "prompt": prompt,
+                "negative": negative,
+                "seed": seed,
+                "steps": steps,
+                "cfg": cfg,
+                "width": width,
+                "height": height,
+                "batch_size": batch_size,
+                "use_tiled_decode": tier.use_tiled_decode if use_tiled_decode is None else use_tiled_decode,
+                "decode_tile_size": decode_tile_size,
+                "engine": engine,
+                "use_torch_compile": use_torch_compile,
+            }
+            if mrflow:
+                builder_kwargs.update(
+                    {
+                        "upscale_model_name": fallback["upscale"],
+                        "stage1_steps": mrflow_stage1_steps,
+                        "refine_steps": mrflow_refine_steps,
+                        "refine_denoise": mrflow_refine_denoise,
+                        "low_width": mrflow_low_width,
+                        "low_height": mrflow_low_height,
+                    }
+                )
+            prompt_dict = builder(**builder_kwargs)
             return _run_prompt(client, prompt_dict, target_dir, output_name, timeout)
         raise

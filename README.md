@@ -59,6 +59,24 @@ contains the normal encoder plus the faster decoder.
 - **torch.compile** is available as a checkbox in the UI. It can speed up
   repeated runs after the first compile, but the first run is slower and
   resolution changes trigger recompilation.
+
+### MrFlow staged sampling (experimental)
+
+- MrFlow is a training-free staged-sampling acceleration path from
+  https://github.com/Xingyu-Zheng/MrFlow and
+  https://arxiv.org/abs/2607.01642.
+- In this app it keeps the same FLUX.2 Klein loaders and defaults, but runs
+  the first pass at low resolution, decodes, upsamples with a Real-ESRGAN x2
+  model, re-encodes, and then does a short high-resolution refinement.
+- The distilled Klein preset uses a 4-step low-res pass, 1-step refine, and
+  a low-noise refine strength around 0.25.
+- It is compatible with the default
+  `black-forest-labs/FLUX.2-small-decoder` VAE path and the tiled decoder
+  option.
+- It is experimental and can drift farther from the source image on edits
+  than a direct full-resolution edit, so it is off by default.
+- The app auto-downloads `RealESRGAN_x2plus.pth` into `models/upscale_models/`
+  from the `2kpr/Real-ESRGAN` Hugging Face repo when you refresh models.
 top of ComfyUI's HTTP API behind a simple, non-technical Gradio front end — no
 node graph required.
 

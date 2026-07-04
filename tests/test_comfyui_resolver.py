@@ -5,7 +5,7 @@ from pathlib import Path
 from comfyui_app import model_resolver
 from comfyui_app.model_resolver import ModelResolverError, resolve_models
 from comfyui_app.vram import select_tier
-from comfyui_app.workflow_builder import build_edit_prompt, build_t2i_prompt
+from comfyui_app.workflow_builder import build_edit_prompt, build_mrflow_edit_prompt, build_mrflow_t2i_prompt, build_t2i_prompt
 
 
 def _tree(*paths: str, size: int = 1) -> list[dict[str, object]]:
@@ -162,6 +162,76 @@ def test_build_t2i_prompt_adds_torch_compile_node_when_requested() -> None:
     assert prompt["10"]["inputs"]["model"] == [compile_node_id, 0]
 
 
+def test_build_mrflow_t2i_prompt_adds_upscale_and_refine_nodes() -> None:
+    prompt = build_mrflow_t2i_prompt(
+        diffusion_model="flux-2-klein-4b-fp8.safetensors",
+        text_encoder_model="qwen_3_4b_fp4_flux2.safetensors",
+        vae_model="full_encoder_small_decoder.safetensors",
+        upscale_model_name="RealESRGAN_x2plus.pth",
+        prompt="a sunny portrait",
+        negative="blurry",
+        seed=0,
+        stage1_steps=4,
+        refine_steps=1,
+        refine_denoise=0.25,
+        low_width=512,
+        low_height=512,
+        width=1024,
+        height=1024,
+        cfg=1.0,
+        batch_size=1,
+        use_tiled_decode=True,
+        decode_tile_size=1024,
+    )
+
+    assert prompt["13"]["class_type"] == "UpscaleModelLoader"
+    assert prompt["14"]["class_type"] == "ImageUpscaleWithModel"
+    assert prompt["14"]["inputs"]["upscale_model"] == ["13", 0]
+    assert prompt["14"]["inputs"]["image"] == ["12", 0]
+    assert prompt["17"]["class_type"] == "VAEEncode"
+    assert prompt["17"]["inputs"]["pixels"] == ["15", 0]
+    assert prompt["19"]["class_type"] == "SplitSigmasDenoise"
+    assert prompt["23"]["class_type"] == "SamplerCustomAdvanced"
+    assert prompt["23"]["inputs"]["latent_image"] == ["17", 0]
+    assert prompt["23"]["inputs"]["sigmas"] == ["19", 1]
+
+
+def test_build_mrflow_edit_prompt_adds_upscale_and_refine_nodes() -> None:
+    prompt = build_mrflow_edit_prompt(
+        diffusion_model="flux-2-klein-4b-fp8.safetensors",
+        text_encoder_model="qwen_3_4b_fp4_flux2.safetensors",
+        vae_model="full_encoder_small_decoder.safetensors",
+        upscale_model_name="RealESRGAN_x2plus.pth",
+        prompt="a sunny portrait",
+        negative="blurry",
+        seed=0,
+        stage1_steps=4,
+        refine_steps=1,
+        refine_denoise=0.25,
+        low_width=512,
+        low_height=512,
+        width=0,
+        height=0,
+        cfg=1.0,
+        megapixels=1.0,
+        input_image_name="input.png",
+        batch_size=1,
+        use_tiled_decode=True,
+        decode_tile_size=1024,
+    )
+
+    assert prompt["19"]["class_type"] == "UpscaleModelLoader"
+    assert prompt["20"]["class_type"] == "ImageUpscaleWithModel"
+    assert prompt["20"]["inputs"]["upscale_model"] == ["19", 0]
+    assert prompt["20"]["inputs"]["image"] == ["18", 0]
+    assert prompt["23"]["class_type"] == "VAEEncode"
+    assert prompt["23"]["inputs"]["pixels"] == ["21", 0]
+    assert prompt["25"]["class_type"] == "SplitSigmasDenoise"
+    assert prompt["29"]["class_type"] == "SamplerCustomAdvanced"
+    assert prompt["29"]["inputs"]["latent_image"] == ["23", 0]
+    assert prompt["29"]["inputs"]["sigmas"] == ["25", 1]
+
+
 def test_resolver_regex_match_picks_fp8(monkeypatch) -> None:
     trees = {
         "black-forest-labs/FLUX.2-klein-4b-fp8": _tree(
@@ -171,6 +241,7 @@ def test_resolver_regex_match_picks_fp8(monkeypatch) -> None:
         "black-forest-labs/FLUX.2-small-decoder": _tree(
             "full_encoder_small_decoder.safetensors",
         ),
+        "2kpr/Real-ESRGAN": _tree("RealESRGAN_x2plus.pth"),
         "Comfy-Org/flux2-klein-4B": _tree(
             "split_files/text_encoders/qwen_3_4b_fp4_flux2.safetensors",
             "split_files/vae/flux2-vae.safetensors",
@@ -186,12 +257,14 @@ def test_resolver_regex_match_picks_fp8(monkeypatch) -> None:
     assert Path(str(resolved["diffusion"]["local_filename"])).name == "flux-2-klein-4b-fp8.safetensors"
     assert Path(str(resolved["text_encoder"]["local_filename"])).name == "qwen_3_4b_fp4_flux2.safetensors"
     assert Path(str(resolved["vae"]["local_filename"])).name == "full_encoder_small_decoder.safetensors"
+    assert Path(str(resolved["upscale"]["local_filename"])).name == "RealESRGAN_x2plus.pth"
 
 
 def test_resolver_engine_nunchaku_int4_picks_int4_diffusion(monkeypatch) -> None:
     trees = {
         "tonera/FLUX.2-klein-4B-Nunchaku": _tree("svdq-int4_r32-FLUX.2-klein-4B-Nunchaku.safetensors"),
         "black-forest-labs/FLUX.2-small-decoder": _tree("full_encoder_small_decoder.safetensors"),
+        "2kpr/Real-ESRGAN": _tree("RealESRGAN_x2plus.pth"),
         "Comfy-Org/flux2-klein-4B": _tree(
             "split_files/text_encoders/qwen_3_4b_fp4_flux2.safetensors",
             "split_files/vae/flux2-vae.safetensors",
@@ -206,11 +279,13 @@ def test_resolver_engine_nunchaku_int4_picks_int4_diffusion(monkeypatch) -> None
 
     assert Path(str(resolved["diffusion"]["local_filename"])).name == "svdq-int4_r32-FLUX.2-klein-4B-Nunchaku.safetensors"
     assert Path(str(resolved["vae"]["local_filename"])).name == "full_encoder_small_decoder.safetensors"
+    assert Path(str(resolved["upscale"]["local_filename"])).name == "RealESRGAN_x2plus.pth"
 
 
 def test_resolver_falls_back_to_flux2_vae_when_small_decoder_missing(monkeypatch) -> None:
     trees = {
         "black-forest-labs/FLUX.2-klein-4b-fp8": _tree("flux-2-klein-4b-fp8.safetensors"),
+        "2kpr/Real-ESRGAN": _tree("RealESRGAN_x2plus.pth"),
         "Comfy-Org/flux2-klein-4B": _tree(
             "split_files/text_encoders/qwen_3_4b_fp4_flux2.safetensors",
             "split_files/vae/flux2-vae.safetensors",
@@ -226,3 +301,4 @@ def test_resolver_falls_back_to_flux2_vae_when_small_decoder_missing(monkeypatch
     resolved = resolve_models(8.0, token="token")
 
     assert Path(str(resolved["vae"]["local_filename"])).name == "flux2-vae.safetensors"
+    assert Path(str(resolved["upscale"]["local_filename"])).name == "RealESRGAN_x2plus.pth"

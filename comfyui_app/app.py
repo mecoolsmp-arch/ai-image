@@ -85,6 +85,7 @@ def _single_edit(
     megapixels: float,
     engine: str,
     use_torch_compile: bool,
+    mrflow: bool,
 ) -> tuple[str | None, str]:
     try:
         result = run_edit(
@@ -98,6 +99,7 @@ def _single_edit(
             megapixels=float(megapixels),
             engine=engine,
             use_torch_compile=bool(use_torch_compile),
+            mrflow=bool(mrflow),
         )
         return str(result.image_path), result.status
     except Exception as exc:
@@ -127,6 +129,7 @@ def _edit_frames(
     megapixels: float,
     engine: str,
     use_torch_compile: bool,
+    mrflow: bool,
 ) -> str:
     if not frame_dir:
         return "Extract frames first."
@@ -143,6 +146,7 @@ def _edit_frames(
             megapixels=float(megapixels),
             engine=engine,
             use_torch_compile=bool(use_torch_compile),
+            mrflow=bool(mrflow),
         )
 
     try:
@@ -169,6 +173,7 @@ def _process_batch(
     megapixels: float,
     engine: str,
     use_torch_compile: bool,
+    mrflow: bool,
 ) -> str:
     def _runner(image_path: Path, prompt_text: str, negative_text: str, target_dir: Path) -> GenerationResult:
         return run_edit(
@@ -182,6 +187,7 @@ def _process_batch(
             megapixels=float(megapixels),
             engine=engine,
             use_torch_compile=bool(use_torch_compile),
+            mrflow=bool(mrflow),
         )
 
     try:
@@ -208,6 +214,7 @@ def _generate_t2i(
     seed: int,
     engine: str,
     use_torch_compile: bool,
+    mrflow: bool,
 ) -> tuple[str | None, str]:
     try:
         result = run_t2i(
@@ -221,6 +228,7 @@ def _generate_t2i(
             seed=int(seed),
             engine=engine,
             use_torch_compile=bool(use_torch_compile),
+            mrflow=bool(mrflow),
         )
         return str(result.image_path), result.status
     except Exception as exc:
@@ -254,6 +262,10 @@ def build_app() -> "gr.Blocks":
                         label="torch.compile (faster after warmup; slower first run, recompiles on resolution change)",
                         value=False,
                     )
+                    edit_mrflow = gr.Checkbox(
+                        label="MrFlow staged (experimental — faster; low-res generate + upscale + refine)",
+                        value=False,
+                    )
                     edit_button = gr.Button("Generate")
                     edit_result = gr.Image(label="Result")
                     edit_status = gr.Textbox(label="Status")
@@ -270,6 +282,7 @@ def build_app() -> "gr.Blocks":
                     edit_megapixels,
                     edit_engine,
                     edit_compile,
+                    edit_mrflow,
                 ],
                 outputs=[edit_result, edit_status],
             )
@@ -296,6 +309,10 @@ def build_app() -> "gr.Blocks":
                         label="torch.compile (faster after warmup; slower first run, recompiles on resolution change)",
                         value=False,
                     )
+                    video_mrflow = gr.Checkbox(
+                        label="MrFlow staged (experimental — faster; low-res generate + upscale + refine)",
+                        value=False,
+                    )
                     edit_frames_button = gr.Button("Edit all frames")
             extract_button.click(
                 fn=_extract_video,
@@ -315,6 +332,7 @@ def build_app() -> "gr.Blocks":
                     video_megapixels,
                     video_engine,
                     video_compile,
+                    video_mrflow,
                 ],
                 outputs=frame_status,
             )
@@ -336,6 +354,10 @@ def build_app() -> "gr.Blocks":
                         label="torch.compile (faster after warmup; slower first run, recompiles on resolution change)",
                         value=False,
                     )
+                    batch_mrflow = gr.Checkbox(
+                        label="MrFlow staged (experimental — faster; low-res generate + upscale + refine)",
+                        value=False,
+                    )
                     batch_button = gr.Button("Process folder")
                     batch_status = gr.Textbox(label="Status")
             batch_button.click(
@@ -351,6 +373,7 @@ def build_app() -> "gr.Blocks":
                     batch_megapixels,
                     batch_engine,
                     batch_compile,
+                    batch_mrflow,
                 ],
                 outputs=batch_status,
             )
@@ -372,6 +395,10 @@ def build_app() -> "gr.Blocks":
                         label="torch.compile (faster after warmup; slower first run, recompiles on resolution change)",
                         value=False,
                     )
+                    t2i_mrflow = gr.Checkbox(
+                        label="MrFlow staged (experimental — faster; low-res generate + upscale + refine)",
+                        value=False,
+                    )
                     t2i_button = gr.Button("Generate")
                     t2i_result = gr.Image(label="Result")
                     t2i_status = gr.Textbox(label="Status")
@@ -388,6 +415,7 @@ def build_app() -> "gr.Blocks":
                     t2i_seed,
                     t2i_engine,
                     t2i_compile,
+                    t2i_mrflow,
                 ],
                 outputs=[t2i_result, t2i_status],
             )

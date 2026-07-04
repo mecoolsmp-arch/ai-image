@@ -84,6 +84,17 @@ MODEL_REGISTRY: dict[str, dict[str, list[Candidate]]] = {
             )
         ],
     },
+    "upscale": {
+        "realesrgan_x2plus": [
+            Candidate(
+                repo="2kpr/Real-ESRGAN",
+                path_regex=r"(^|/)RealESRGAN_x2plus\.pth$",
+                dest_subdir="upscale_models",
+                min_vram=0.0,
+                kind="RealESRGAN_x2plus.pth",
+            )
+        ],
+    },
     "text_encoder": {
         "flux2_fp4": [
             Candidate(
@@ -224,6 +235,7 @@ def resolve_models(
     resolved = {
         "diffusion": _select_candidate_for_key("diffusion", diffusion_key, token),
         "text_encoder": _select_candidate_for_key("text_encoder", text_encoder_key, token),
+        "upscale": _select_candidate_for_key("upscale", "realesrgan_x2plus", token),
     }
     try:
         resolved["vae"] = _select_candidate_for_key("vae", "flux2_small_decoder", token)
