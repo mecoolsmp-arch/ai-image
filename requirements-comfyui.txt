@@ -1,0 +1,7 @@
+requests
+websocket-client
+opencv-python-headless
+imageio
+pillow
+gradio
+huggingface_hub[hf_xet]

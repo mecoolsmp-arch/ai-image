@@ -1,0 +1,62 @@
+@echo off
+setlocal EnableExtensions
+
+echo ============================================
+echo         ComfyUI Local Image App Launcher
+echo ============================================
+echo.
+
+cd /d "%~dp0" 2>nul
+if errorlevel 1 (
+  echo ERROR: Could not change to the repository folder.
+  exit /b 1
+)
+
+if not exist "ComfyUI\main.py" (
+  echo ERROR: ComfyUI was not found.
+  echo Run Install-ComfyUI.bat first.
+  exit /b 1
+)
+
+if not exist "venv\Scripts\python.exe" (
+  echo ERROR: The virtual environment was not found.
+  echo Run Install-ComfyUI.bat first.
+  exit /b 1
+)
+
+call "venv\Scripts\activate.bat"
+if errorlevel 1 (
+  echo ERROR: Could not activate the virtual environment.
+  exit /b 1
+)
+
+set "COMFYUI_HOST=127.0.0.1"
+set "COMFYUI_PORT=8188"
+set "COMFYUI_UI_HOST=127.0.0.1"
+set "COMFYUI_UI_PORT=7861"
+set "EXTRA_FLAGS="
+for /f "usebackq delims=" %%A in (`python -c "from comfyui_app.vram import detect_vram, select_tier; gb, _, _ = detect_vram(); print(' '.join(select_tier(gb).extra_launch_flags))"`) do set "EXTRA_FLAGS=%%A"
+set "SAGE_FLAG="
+for /f "usebackq delims=" %%A in (`python -c "import sageattention; print('--use-sage-attention')" 2^>nul`) do set "SAGE_FLAG=%%A"
+
+echo Starting ComfyUI...
+start "ComfyUI" /b python "ComfyUI\main.py" --listen %COMFYUI_HOST% --port %COMFYUI_PORT% --fast %SAGE_FLAG% %EXTRA_FLAGS%
+
+echo Waiting for ComfyUI to become ready...
+python -c "from comfyui_app.comfy_client import ComfyClient; from comfyui_app.config import COMFYUI_HOST, COMFYUI_PORT; ComfyClient(COMFYUI_HOST, COMFYUI_PORT).wait_until_up(timeout=180)"
+if errorlevel 1 (
+  echo ERROR: ComfyUI did not start.
+  exit /b 1
+)
+
+echo Launching the local image app...
+python -m comfyui_app.app
+set "APP_EXIT=%errorlevel%"
+
+if not "%APP_EXIT%"=="0" (
+  echo ERROR: The app exited with code %APP_EXIT%.
+  exit /b %APP_EXIT%
+)
+
+endlocal
+exit /b 0
