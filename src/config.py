@@ -4,8 +4,17 @@ Centralizes environment variable defaults, cache paths, and CUDA 13
 optimization knobs that were previously scattered across app.py.
 """
 
+import logging
 import os
 import sys
+import warnings
+
+# Suppress noisy xformers warnings when the installed wheel is incompatible
+# with the current PyTorch / Python build.  SageAttention / SDPA are used
+# as the primary attention backends, so a broken xformers install is harmless.
+logging.getLogger("xformers").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", message=r"Importing from timm\.models\..* is deprecated.*", category=FutureWarning)
+warnings.filterwarnings("ignore", message=r"Overwriting tiny_vit_.* in registry.*", category=UserWarning)
 
 # Windows-specific fix for asyncio ConnectionResetError (WinError 10054)
 if sys.platform == "win32":

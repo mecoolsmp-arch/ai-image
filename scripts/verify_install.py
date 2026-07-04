@@ -8,7 +8,6 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 
 CRITICAL_RESOLVER_ARGS = [
-    "qwen-tts==0.1.1",
     "transformers==4.57.3",
     "huggingface_hub[hf_xet]==0.36.2",
     "hf_xet",
@@ -41,10 +40,7 @@ def check_imports() -> bool:
         ("diffusers", "Diffusers"),
         ("gradio", "Gradio"),
         ("PIL", "Pillow"),
-        ("cv2", "OpenCV"),
         ("accelerate", "Accelerate"),
-        ("imageio_ffmpeg", "imageio-ffmpeg"),
-        ("onnxruntime", "ONNX Runtime"),
         ("hf_xet", "HF Xet"),
     ]
 
@@ -91,16 +87,6 @@ def print_runtime_matrix() -> bool:
     except Exception as exc:
         print(f"  [FAIL] torch runtime: {exc}")
         return False
-
-    try:
-        import onnxruntime as ort
-
-        providers = ort.get_available_providers()
-        print(f"  onnxruntime={ort.__version__}")
-        print(f"  onnx_providers={providers}")
-    except Exception as exc:
-        print(f"  [FAIL] onnxruntime runtime: {exc}")
-        matrix_ok = False
 
     # Check for core speedup packages (now required installs)
     try:

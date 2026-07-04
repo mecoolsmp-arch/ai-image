@@ -39,100 +39,14 @@ def _probe_optional_dependency_statuses() -> List[Tuple[str, str, str]]:
     statuses: List[Tuple[str, str, str]] = []
 
     for import_name, display_name in [
-        ("insightface", "InsightFace"),
-        ("facexlib", "FaceXLib"),
-        ("timm", "PyTorch Image Models"),
-        ("einops", "Einops"),
-        ("ftfy", "FTFY"),
-        ("filterpy", "FilterPy"),
-        ("pydub", "PyDub"),
-        ("librosa", "Librosa"),
-        ("pruna", "Pruna"),
+        ("triton", "Triton"),
+        ("sageattention", "SageAttention"),
+        ("hf_xet", "HF Xet"),
     ]:
         if _module_available(import_name):
             statuses.append(("OK", display_name, "available"))
         else:
             statuses.append(("WARN", display_name, "package not installed"))
-
-    if _module_available("qwen_tts"):
-        statuses.append(("OK", "Qwen3 TTS", "available"))
-    else:
-        statuses.append(("WARN", "Qwen3 TTS", "package not installed"))
-
-    # MediaPipe / ControlNet Aux
-    mediapipe_available = _module_available("mediapipe")
-    mediapipe_has_solutions = False
-    mediapipe_error = None
-    if mediapipe_available:
-        try:
-            import mediapipe  # type: ignore
-            mediapipe_has_solutions = hasattr(mediapipe, "solutions")
-        except Exception as exc:
-            mediapipe_error = str(exc)
-
-    if _module_available("controlnet_aux"):
-        if mediapipe_error:
-            statuses.append(("WARN", "ControlNet Aux", f"degraded: {mediapipe_error}"))
-        elif not mediapipe_available:
-            statuses.append(("WARN", "ControlNet Aux", "degraded: MediaPipe not installed"))
-        elif not mediapipe_has_solutions:
-            statuses.append(("WARN", "ControlNet Aux", "degraded: MediaPipe legacy solutions API unavailable"))
-        else:
-            try:
-                importlib.import_module("controlnet_aux")
-                statuses.append(("OK", "ControlNet Aux", "available"))
-            except Exception as exc:
-                statuses.append(("WARN", "ControlNet Aux", f"unavailable: {exc}"))
-    else:
-        statuses.append(("WARN", "ControlNet Aux", "package not installed"))
-
-    if mediapipe_available and mediapipe_has_solutions:
-        statuses.append(("OK", "MediaPipe", "available"))
-    elif mediapipe_available:
-        statuses.append(("WARN", "MediaPipe", "installed without legacy solutions API"))
-    elif mediapipe_error:
-        statuses.append(("WARN", "MediaPipe", mediapipe_error))
-    else:
-        statuses.append(("WARN", "MediaPipe", "package not installed"))
-
-    # Torchaudio-dependent packages
-    torchaudio_module = None
-    torchaudio_error = None
-    if _module_available("torchaudio"):
-        try:
-            import torchaudio  # type: ignore
-            torchaudio_module = torchaudio
-        except Exception as exc:
-            torchaudio_error = str(exc)
-
-    if torchaudio_error:
-        statuses.append(("WARN", "PyAnnote Audio", f"unavailable: torchaudio import failed ({torchaudio_error})"))
-        statuses.append(("WARN", "SpeechBrain", f"unavailable: torchaudio import failed ({torchaudio_error})"))
-    else:
-        missing_pyannote = []
-        missing_speechbrain = []
-        if torchaudio_module is None:
-            missing_pyannote.append("torchaudio")
-            missing_speechbrain.append("torchaudio")
-        else:
-            if not hasattr(torchaudio_module, "AudioMetaData"):
-                missing_pyannote.append("AudioMetaData")
-            if not hasattr(torchaudio_module, "list_audio_backends"):
-                missing_speechbrain.append("list_audio_backends")
-
-        if _module_available("pyannote.audio") and not missing_pyannote:
-            statuses.append(("OK", "PyAnnote Audio", "available"))
-        elif _module_available("pyannote.audio"):
-            statuses.append(("WARN", "PyAnnote Audio", f"unavailable: torchaudio missing {', '.join(missing_pyannote)}"))
-        else:
-            statuses.append(("WARN", "PyAnnote Audio", "package not installed"))
-
-        if _module_available("speechbrain") and not missing_speechbrain:
-            statuses.append(("OK", "SpeechBrain", "available"))
-        elif _module_available("speechbrain"):
-            statuses.append(("WARN", "SpeechBrain", f"unavailable: torchaudio missing {', '.join(missing_speechbrain)}"))
-        else:
-            statuses.append(("WARN", "SpeechBrain", "package not installed"))
 
     return statuses
 
@@ -154,10 +68,8 @@ def check_required_dependencies() -> bool:
         ("sentencepiece", "SentencePiece"),
         ("google.protobuf", "Protobuf"),
         ("PIL", "Pillow"),
-        ("cv2", "OpenCV"),
         ("gradio", "Gradio"),
         ("scipy", "SciPy"),
-        ("sklearn", "Scikit-learn"),
         ("peft", "PEFT"),
         ("optimum.quanto", "Optimum Quanto"),
         ("requests", "Requests"),
@@ -296,13 +208,6 @@ def log_provider_telemetry(
             print("[Runtime] GPU: CUDA unavailable")
     except Exception as e:
         print(f"[Runtime] GPU telemetry unavailable: {e}")
-
-    try:
-        import onnxruntime as ort
-        providers = ort.get_available_providers()
-        print(f"[Runtime] ONNX providers: {providers}")
-    except Exception as e:
-        print(f"[Runtime] ONNX telemetry unavailable: {e}")
 
     print(f"[Runtime] Acceleration stack: {describe_acceleration_stack(runtime_stack)}")
 

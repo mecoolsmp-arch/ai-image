@@ -18,6 +18,7 @@ _io_executor = ThreadPoolExecutor(max_workers=4)
 
 # Cache for batch processors
 _batch_processor_cache: Dict[str, Any] = {}
+_pipe_call_params_cache: Dict[type, Any] = {}
 
 # Ampere optimization flag
 _ampere_optimizations_enabled = False
@@ -156,8 +157,12 @@ def build_safe_kwargs(pipe: Any, **kwargs):
         # Always allow num_images_per_prompt to ensure we don't get duplicates
         allowed_overrides = {"num_images_per_prompt"}
 
-        sig = inspect.signature(pipe.__call__)
-        supported_params = sig.parameters
+        pipe_class = pipe.__class__
+        supported_params = _pipe_call_params_cache.get(pipe_class)
+        if supported_params is None:
+            sig = inspect.signature(pipe.__call__)
+            supported_params = sig.parameters
+            _pipe_call_params_cache[pipe_class] = supported_params
         return {k: v for k, v in kwargs.items() if k in supported_params or k in allowed_overrides}
     except (TypeError, ValueError):
         # Fallback to a minimal set if signature cannot be inspected
@@ -418,15 +423,26 @@ async def process_batch_folder_async(
             new_w, new_h = apply_scale_to_dimensions(new_w, new_h, downscale_factor)
         return new_w, new_h
     
-    for path in image_paths:
-        try:
-            new_w, new_h = await asyncio.to_thread(get_image_dimensions, path)
-            buckets.setdefault((new_w, new_h), []).append(path)
-        except Exception:
+    semaphore = asyncio.Semaphore(64)
+
+    async def get_image_dimensions_limited(path):
+        async with semaphore:
+            try:
+                return path, await asyncio.to_thread(get_image_dimensions, path), None
+            except Exception as exc:
+                return path, None, exc
+
+    for path, size, exc in await asyncio.gather(*(get_image_dimensions_limited(path) for path in image_paths)):
+        if exc is None and size is not None:
+            buckets.setdefault(size, []).append(path)
+        else:
             fallback.append(path)
 
     if buckets:
-        bucket_list = [buckets[key] for key in sorted(buckets.keys())]
+        bucket_keys = sorted(buckets.keys())
+        process_kwargs.setdefault("width", bucket_keys[0][0])
+        process_kwargs.setdefault("height", bucket_keys[0][1])
+        bucket_list = [buckets[key] for key in bucket_keys]
         if fallback:
             bucket_list.append(fallback)
         processing_paths = bucket_list

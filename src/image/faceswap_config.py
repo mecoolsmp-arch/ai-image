@@ -22,7 +22,7 @@ from dataclasses import dataclass
 class FaceSwapConfig:
     """Runtime-configurable Face Swap post-processing settings."""
 
-    # When True, every generated / batched / video-frame image is run
+    # When True, every generated image is run
     # through :func:`post_process_with_library` before being displayed.
     auto_swap_from_library: bool = False
 

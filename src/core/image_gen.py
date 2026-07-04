@@ -1,14 +1,12 @@
 import os
-import time
+import traceback
 import torch
 import contextlib
-import gc
 import re
 import inspect
-from PIL import Image, Image as PILImage
-from typing import Optional, List, Dict, Any, Union, Callable
+from PIL import Image as PILImage
+from typing import Optional, List, Any, Callable
 
-from src.constants import CHARACTER_MANAGER_STATE_FILENAME
 from src.runtime_policies import (
     is_flux_model,
     resolve_default_inference_steps,
@@ -18,7 +16,7 @@ from src.runtime_policies import (
     should_use_vae_slicing,
     should_use_vae_tiling,
 )
-from src.utils.device_utils import get_memory_usage, print_memory, get_device_vram_gb
+from src.utils.device_utils import get_device_vram_gb
 
 class ImageGenerator:
     """Core image generation engine decoupled from UI."""
@@ -29,6 +27,7 @@ class ImageGenerator:
         self._cached_pipe_params = None  # Cache inspect.signature result
         self._cached_pipe_class = None   # Track which pipe class was cached
         self._last_config_signature = None  # Skip redundant configure_optimization_policy calls
+        self._pipe_signature_cache = {}
 
     def request_stop(self):
         self.stop_requested = True
@@ -65,27 +64,18 @@ class ImageGenerator:
         # stand-alone (without enable_preservation) or stacked on top of
         # the DWPose skeleton path.
         enable_expression_transfer: bool = False,
-        # ---- Upscale (run after face-swap post-process) ----
-        enable_upscale: bool = False,
-        upscale_model: Optional[str] = None,
-        upscale_target_scale: Optional[float] = None,
-        upscale_tile: int = 512,
         # ---- Text preservation (OCR the source, repaint on output) -----
         # Target use case: manga / comic / caption-heavy source images
         # where the diffusion model reliably garbles or deletes text.
         # We OCR the source at pipeline start (while the model loads),
-        # then repaint the text on the final image after upscale so the
+        # then repaint the text on the final image so the
         # preserved text ends up at the intended resolution.
         enable_text_preservation: bool = False,
         text_preservation_source: Optional[Any] = None,
         text_preservation_languages: Optional[List[str]] = None,
         text_preservation_min_confidence: float = 0.3,
-        # Internal callers (e.g. the Klein Hi-Res LoRA upscale path in
-        # ``src/image/upscaler_ui.py``) reuse ``generate`` for its
-        # pipeline/LoRA/offload machinery but do *not* want the
-        # library-driven face swap to fire a second time on their output.
-        # Per-call opt-out so the outer generation keeps running face swap
-        # while the inner LoRA refine doesn't double-swap.
+        # Internal callers can opt out of the library-driven face swap
+        # post-process.
         skip_face_swap: bool = False,
         progress_callback: Optional[Callable] = None,
     ):
@@ -122,13 +112,8 @@ class ImageGenerator:
 
         pipe = self.pm.load_pipeline(model_choice, device)
         current_model = self.pm.current_model
-        # Capture fallback reason immediately: the inline-upscale path may
-        # recurse into ``generate()`` (Klein Hi-Res LoRA refine calls
-        # ``gen.generate(model_choice=LOW_VRAM_FLUX_MODEL_CHOICE, ...)``),
-        # and that inner ``load_pipeline`` overwrites
-        # ``self.pm.last_model_fallback_reason``. If we read it only at
-        # status-string build time we would surface the inner SDNQ load's
-        # fallback reason (or clobber the user's real one with ``None``).
+        # Capture fallback reason immediately so later operations do not
+        # overwrite the user's real model fallback context.
         fallback_reason = self.pm.last_model_fallback_reason
 
         # Clamp step count for distilled models. FLUX.2 [klein] and Z-Image
@@ -136,7 +121,10 @@ class ImageGenerator:
         # additional steps are wasted wall-clock on RTX 3070. Users who pick
         # 20+ steps in the UI unknowingly 5× their latency with no visible
         # improvement; clamp silently here instead of surprising them.
-        effective_steps = resolve_default_inference_steps(current_model, steps)
+        resolved_profile = getattr(self.pm, "optimization_profile", "balanced")
+        effective_steps = resolve_default_inference_steps(
+            current_model, steps, optimization_profile=resolved_profile
+        )
         if effective_steps != steps:
             print(
                 f"  Steps clamped {steps}→{effective_steps} for distilled model "
@@ -257,13 +245,46 @@ class ImageGenerator:
             except Exception as _expr_exc:
                 print(f"  [expression-transfer] skipped: {_expr_exc}")
 
+        # 5b. Optional Accelerators (Pruna FORA, qkv_diffusers, etc.)
+        # Apply BEFORE memory policy / CPU offload because FORA breaks
+        # when components are moved between CPU and GPU each step.
+        if current_model == "flux2-klein-sdnq":
+            pipe, _ = self.pm.prepare_flux_sdnq_optional_accelerators(
+                pipe,
+                device=device,
+                steps=steps,
+                enable_optional_accelerators=enable_optional_accelerators,
+                mode="single",
+                has_lora=self.pm.current_lora_path is not None,
+                has_pulid=False,
+                has_faceswap=False,
+                has_pose_control=enable_preservation,
+                has_cpu_offload=self.pm.should_enable_cpu_offload(
+                    current_model, enable_preservation, device
+                ),
+            )
+        elif current_model == "flux2-klein-int8":
+            pipe, _ = self.pm.prepare_flux_int8_optional_accelerators(
+                pipe,
+                device=device,
+                steps=steps,
+                enable_optional_accelerators=enable_optional_accelerators,
+                mode="single",
+                has_lora=self.pm.current_lora_path is not None,
+                has_pulid=False,
+                has_faceswap=False,
+                has_pose_control=enable_preservation,
+                has_cpu_offload=self.pm.should_enable_cpu_offload(
+                    current_model, enable_preservation, device
+                ),
+            )
+
         # 6. Generation Parameters
         if seed == -1:
             seed = torch.randint(0, 2**32, (1,)).item()
 
         generator = torch.Generator(device if device != "cpu" else None).manual_seed(int(seed))
 
-        resolved_profile = getattr(self.pm, "optimization_profile", "balanced")
         vram_gb = get_device_vram_gb(device)
         use_attention_slicing = should_use_attention_slicing(
             device=device,
@@ -337,16 +358,7 @@ class ImageGenerator:
                     kwargs = {"prompt": prompt}
                     # Cache inspect.signature result per pipe class to avoid
                     # repeated introspection on every generation call.
-                    pipe_class = target_pipe.__class__
-                    if self._cached_pipe_class is pipe_class and self._cached_pipe_params is not None:
-                        supported_params = self._cached_pipe_params
-                    else:
-                        try:
-                            supported_params = inspect.signature(target_pipe.__call__).parameters
-                        except (TypeError, ValueError):
-                            supported_params = {}
-                        self._cached_pipe_class = pipe_class
-                        self._cached_pipe_params = supported_params
+                    supported_params = self._get_pipe_call_params(target_pipe)
 
                     if "prompt_2" in supported_params:
                         kwargs["prompt_2"] = prompt
@@ -390,7 +402,7 @@ class ImageGenerator:
                         # regenerates the image instead of preserving content.
                         # Guard by signature because not every FLUX-family
                         # pipeline exposes ``strength``.
-                        flux_params = self._cached_pipe_params or {}
+                        flux_params = self._get_pipe_call_params(pipe)
                         if "strength" in flux_params:
                             flux_kwargs["strength"] = float(img2img_strength)
                         # Only pass height/width if they match the image dims
@@ -433,6 +445,7 @@ class ImageGenerator:
                     mode_str = "txt2img"
 
         except Exception as e:
+            traceback.print_exc()
             return None, f"Generation failed: {e}"
 
         if self.stop_requested: return None, "Cancelled."
@@ -459,29 +472,8 @@ class ImageGenerator:
                 # Library auto-swap is best-effort — never fails generation.
                 print(f"  [face-swap] library post-process skipped: {_swap_exc}")
 
-        # Post-processing: optional upscaling. Runs after face-swap so the
-        # upscaler cleans up any inswapper seam artifacts at the same time.
-        # Silent no-op when disabled; silent degrade (return pre-upscale
-        # image) when the upscaler can't load.
-        upscale_status: Optional[str] = None
-        if enable_upscale:
-            try:
-                from src.image.upscaler_ui import run_upscale
-                upscaled, upscale_status = run_upscale(
-                    image,
-                    model_key=upscale_model or "Real-ESRGAN x4plus",
-                    target_scale=upscale_target_scale,
-                    tile=int(upscale_tile) if upscale_tile else 512,
-                    device=device,
-                )
-                if upscaled is not None:
-                    image = upscaled
-                print(f"  [upscale] {upscale_status}")
-            except Exception as _ups_exc:
-                print(f"  [upscale] post-process skipped: {_ups_exc}")
-
         # Text preservation: runs LAST so the repainted text lands on
-        # the final (post-face-swap, post-upscale) image at full output
+        # the final post-face-swap image at full output
         # resolution. If no explicit source was passed, fall back to
         # the first input/reference image — for manga-to-realistic the
         # img2img source IS the text source. Independent of
@@ -516,11 +508,23 @@ class ImageGenerator:
         status = f"Seed: {seed} | Mode: {mode_str} | Model: {current_model} | Device: {device}{fallback_info}"
         if preservation_status:
             status += f" | {preservation_status}"
-        if upscale_status:
-            status += f" | {upscale_status}"
         if text_status:
             status += f" | {text_status}"
         return image, status
+
+    def _get_pipe_call_params(self, target_pipe):
+        pipe_class = target_pipe.__class__
+        cached = self._pipe_signature_cache.get(pipe_class)
+        if cached is not None:
+            return cached
+        try:
+            supported_params = inspect.signature(target_pipe.__call__).parameters
+        except (TypeError, ValueError):
+            supported_params = {}
+        self._pipe_signature_cache[pipe_class] = supported_params
+        self._cached_pipe_class = pipe_class
+        self._cached_pipe_params = supported_params
+        return supported_params
 
     def _scale_dims(self, w, h, factor):
         base_w = self._safe_int(w, 512)

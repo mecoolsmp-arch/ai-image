@@ -1,5 +1,5 @@
-# PyTorch 2.10.0 is installed separately by Install.bat with CUDA 13 support
-# DO NOT add torch, torchvision, torchaudio here - they will be overwritten with CPU versions!
+# PyTorch 2.10.0 is installed separately by Install.bat with CUDA 13 support.
+# DO NOT add torch/torchvision here - they will be overwritten with CPU versions.
 
 accelerate>=1.12.0
 transformers==4.57.3
@@ -10,38 +10,10 @@ huggingface_hub[hf_xet]==0.36.2
 diffusers>=0.36.0
 sdnq
 gradio>=6.12.0
+pydub==0.25.1  # Imported by Gradio even for image-only apps
 pillow<11
 peft>=0.17.0
 scipy
 optimum-quanto>=0.2.7
-pruna>=0.3.2,<0.4; python_version < "3.13"
+ninja>=1.13.0
 requests
-nltk
-
-# PuLID-FLUX dependencies for character consistency
-opencv-python
-timm
-einops
-ftfy
-facexlib
-insightface
-# onnxruntime-gpu with CUDA 13 is installed separately by Install.bat from nightly index
-# Strictly enforce CUDA 13.x compatibility in Install.bat
-scikit-learn  # For DBSCAN clustering in multi-character detection
-filterpy
-
-# Pose & Expression Preservation
-controlnet-aux>=0.0.10  # For DWPose/OpenPose pose and facial expression extraction
-mediapipe  # Latest version; ControlNet Aux will be degraded but app handles this gracefully
-qwen-tts==0.1.1
-pyannote-audio==3.4.0
-speechbrain
-pydub
-librosa
-imageio-ffmpeg
-soundfile
-moviepy<2.2
-
-# NOTE:
-# WhisperX currently pins torch~=2.8 and conflicts with PyTorch 2.10.0 CUDA 13 wheels.
-# Keep it optional and install only in a separate env if needed.

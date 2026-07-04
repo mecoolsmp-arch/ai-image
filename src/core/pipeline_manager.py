@@ -15,7 +15,9 @@ from safetensors.torch import load_file
 
 from src.runtime_policies import (
     default_enable_windows_compile_probe,
+    is_cuda13_runtime,
     is_flux_model,
+    is_sdnq_model,
     is_sdnq_or_quantized,
     record_torch_compile_probe_result,
     resolve_optimization_profile,
@@ -26,6 +28,7 @@ from src.runtime_policies import (
     should_use_vae_tiling,
 )
 from src.utils.device_utils import get_memory_usage, print_memory, get_device_vram_gb
+from src.utils.json_compat import json_dtype_patch_context
 
 ZIMAGE_INT8_REPO_ID = "Disty0/Z-Image-Turbo-SDNQ-int8"
 
@@ -45,6 +48,7 @@ class PipelineManager:
         self.flux2_small_decoder_vaes: Dict[str, Any] = {}
         self.runtime_memory_policy_cache: Dict[tuple, Dict[str, Any]] = {}
         self.active_runtime_memory_policy: Dict[str, Any] = {}
+        self._active_runtime_policy_signature = None
         self.optional_accelerator_pipes: Dict[tuple, Any] = {}
         self.active_optional_accelerator_status: Dict[str, Any] = {}
         self.last_model_fallback_reason = None
@@ -88,9 +92,6 @@ class PipelineManager:
         # upscaler path (trigger "High resolution", strength 0.9, ~88 MB).
         # Runs a full FLUX.2 img2img pass; slower than ESRGAN but preserves
         # content much more faithfully.
-        self.klein_hires_lora_url = "https://civitai.com/api/download/models/2739957"
-        self.klein_hires_lora_path = os.path.join(self.loras_dir, "kleinHighResolution.safetensors")
-
         # Klein Face Expression Transfer LoRA — 4B build (trigger "transfer
         # character face expression in image1 with character face expression
         # in image2", strength 1.0, ~88 MB).  Quality complement to DWPose
@@ -392,16 +393,41 @@ class PipelineManager:
             return False
         return tuple(decoder_block_out_channels) == (96, 192, 384, 384)
 
-    def _build_flux_sdnq_pruna_smash_config(self, device: str):
+    def _build_flux_pruna_smash_config(
+        self,
+        device: str,
+        optimization_profile: str = "balanced",
+        model_key: str = "flux2-klein-sdnq",
+    ):
         from pruna import SmashConfig
+
+        # Aggressive caching for max_speed; conservative for stability.
+        if optimization_profile == "max_speed":
+            fora_interval = 4
+            fora_start_step = 2
+        elif optimization_profile == "stability":
+            fora_interval = 2
+            fora_start_step = 4
+        else:
+            fora_interval = 3
+            fora_start_step = 3
+
+        # FLUX.2-klein-4B is a distilled model — it never uses CFG, so the
+        # transformer is invoked once per step regardless of int8 / SDNQ
+        # quantization format.  fora_backbone_calls_per_step=2 would double
+        # latency with no quality benefit.
+        backbone_calls = 1
 
         smash_config = SmashConfig(
             {
                 "fora": {
-                    "fora_interval": 2,
-                    "fora_start_step": 2,
-                    "fora_backbone_calls_per_step": 1,
-                }
+                    "fora_interval": fora_interval,
+                    "fora_start_step": fora_start_step,
+                    "fora_backbone_calls_per_step": backbone_calls,
+                },
+                # qkv_diffusers factorizer batches QKV projections into one
+                # fused matmul — HuggingFace docs cite up to 4.2x on FLUX.
+                "qkv_diffusers": {},
             },
             device=device,
         )
@@ -409,7 +435,7 @@ class PipelineManager:
             smash_config.disable_saving()
         return smash_config
 
-    def prepare_flux_sdnq_optional_accelerators(
+    def _prepare_flux_optional_accelerators(
         self,
         pipe,
         *,
@@ -422,6 +448,8 @@ class PipelineManager:
         has_faceswap: bool = False,
         has_pose_control: bool = False,
         has_cpu_offload: bool = False,
+        allowed_models: Tuple[str, ...] = ("flux2-klein-sdnq",),
+        cache_version: str = "v1",
     ) -> Tuple[Any, Dict[str, Any]]:
         status: Dict[str, Any] = {
             "requested": bool(enable_optional_accelerators),
@@ -442,12 +470,12 @@ class PipelineManager:
         if not status["requested"]:
             self.active_optional_accelerator_status = dict(status)
             return pipe, dict(status)
-        if self.current_model != "flux2-klein-sdnq":
+        if self.current_model not in allowed_models:
             return skip(f"unsupported model: {self.current_model}")
         if device != "cuda":
             return skip("requires CUDA")
-        if int(steps) < 8:
-            return skip("requires at least 8 inference steps")
+        if int(steps) < 4:
+            return skip("requires at least 4 inference steps")
         if mode != "single":
             return skip(f"disabled for {mode} workflow")
         if has_pose_control:
@@ -466,19 +494,32 @@ class PipelineManager:
         except Exception as exc:
             return skip(f"pruna unavailable: {exc}")
 
-        cache_key = (id(pipe), device, "flux2-klein-sdnq-pruna-fora-v1")
+        cache_key = (
+            id(pipe),
+            device,
+            f"{self.current_model}-pruna-fora-{cache_version}",
+        )
         cached = self.optional_accelerator_pipes.get(cache_key)
         if cached is not None:
             status["enabled"] = True
             status["backend"] = "pruna-fora"
             status["pruna_fora"] = True
             self.active_optional_accelerator_status = dict(status)
-            print("  [Optional Accelerators] Using cached Pruna FORA pipeline for FLUX SDNQ.")
+            print(
+                f"  [Optional Accelerators] Using cached Pruna FORA pipeline for {self.current_model}."
+            )
             return cached, dict(status)
 
         try:
-            smash_config = self._build_flux_sdnq_pruna_smash_config(device)
-            accelerated_pipe = smash(model=copy.deepcopy(pipe), smash_config=smash_config)
+            smash_config = self._build_flux_pruna_smash_config(
+                device=device,
+                optimization_profile=getattr(self, "optimization_profile", "balanced"),
+                model_key=self.current_model,
+            )
+            # Triton autotuner may write dtype objects via json.dumps during
+            # compilation; scope the encoder patch to this block only.
+            with json_dtype_patch_context():
+                accelerated_pipe = smash(model=copy.deepcopy(pipe), smash_config=smash_config)
         except Exception as exc:
             return skip(f"pruna smash failed: {exc}")
 
@@ -487,20 +528,81 @@ class PipelineManager:
         status["backend"] = "pruna-fora"
         status["pruna_fora"] = True
         self.active_optional_accelerator_status = dict(status)
-        print("  [Optional Accelerators] Enabled Pruna FORA for FLUX SDNQ.")
+        print(
+            f"  [Optional Accelerators] Enabled Pruna FORA for {self.current_model}."
+        )
         return accelerated_pipe, dict(status)
+
+    def prepare_flux_sdnq_optional_accelerators(
+        self,
+        pipe,
+        *,
+        device: str,
+        steps: int,
+        enable_optional_accelerators: bool,
+        mode: str = "single",
+        has_lora: bool = False,
+        has_pulid: bool = False,
+        has_faceswap: bool = False,
+        has_pose_control: bool = False,
+        has_cpu_offload: bool = False,
+    ) -> Tuple[Any, Dict[str, Any]]:
+        return self._prepare_flux_optional_accelerators(
+            pipe,
+            device=device,
+            steps=steps,
+            enable_optional_accelerators=enable_optional_accelerators,
+            mode=mode,
+            has_lora=has_lora,
+            has_pulid=has_pulid,
+            has_faceswap=has_faceswap,
+            has_pose_control=has_pose_control,
+            has_cpu_offload=has_cpu_offload,
+            allowed_models=("flux2-klein-sdnq",),
+            cache_version="v1",
+        )
+
+    def prepare_flux_int8_optional_accelerators(
+        self,
+        pipe,
+        *,
+        device: str,
+        steps: int,
+        enable_optional_accelerators: bool,
+        mode: str = "single",
+        has_lora: bool = False,
+        has_pulid: bool = False,
+        has_faceswap: bool = False,
+        has_pose_control: bool = False,
+        has_cpu_offload: bool = False,
+    ) -> Tuple[Any, Dict[str, Any]]:
+        return self._prepare_flux_optional_accelerators(
+            pipe,
+            device=device,
+            steps=steps,
+            enable_optional_accelerators=enable_optional_accelerators,
+            mode=mode,
+            has_lora=has_lora,
+            has_pulid=has_pulid,
+            has_faceswap=has_faceswap,
+            has_pose_control=has_pose_control,
+            has_cpu_offload=has_cpu_offload,
+            allowed_models=("flux2-klein-int8",),
+            cache_version="v1",
+        )
 
     def compile_pipeline_components(self, pipe, device, cache_key=None, model_key: Optional[str] = None):
         """Apply torch.compile to pipeline components for RTX 3070 Ampere optimization."""
         if device != "cuda" or not torch.cuda.is_available():
             return False
 
-        # Defense-in-depth: never torch.compile SDNQ/quantized models.
+        # Defense-in-depth: never torch.compile SDNQ models.
         # The inductor backend cannot find CUDA kernels for oneDNN
         # quantized ops (onednn.qlinear_prepack), causing:
         #   NotImplementedError: could not find kernel for
         #     onednn.qlinear_prepack.default at dispatch key CUDA
-        if is_sdnq_or_quantized(model_key, pipe):
+        # optimum-quanto int8 does NOT use oneDNN, so we allow it to try.
+        if is_sdnq_model(model_key, pipe):
             return False
 
         capability = torch.cuda.get_device_capability(0)
@@ -522,27 +624,31 @@ class PipelineManager:
             return False
 
         try:
-            compile_mode = "reduce-overhead" if os.name == "nt" else "max-autotune"
-            fullgraph = False if os.name == "nt" else True
-            # Prefer regional compilation (compile_repeated_blocks) for dramatically
-            # faster compile latency (~7x faster cold start) while keeping the same
-            # runtime speedup. Fall back to full torch.compile if unavailable.
-            compiled_any = False
-            for component_name in ("transformer", "unet"):
-                component = getattr(pipe, component_name, None)
-                if component is None:
-                    continue
-                if hasattr(component, "compile_repeated_blocks"):
-                    component.compile_repeated_blocks(fullgraph=fullgraph)
-                    compiled_any = True
-                else:
-                    setattr(pipe, component_name, torch.compile(component, mode=compile_mode, fullgraph=fullgraph))
-                    compiled_any = True
-            if not compiled_any:
-                return False
-            self.compiled_models[key] = True
-            record_torch_compile_probe_result(key, True)
-            return True
+            # Triton autotuner may serialize dtype objects with json.dumps
+            # during kernel compilation; scope the encoder patch to the
+            # compile phase only.
+            with json_dtype_patch_context():
+                compile_mode = "reduce-overhead" if os.name == "nt" else "max-autotune"
+                fullgraph = False if os.name == "nt" else True
+                # Prefer regional compilation (compile_repeated_blocks) for dramatically
+                # faster compile latency (~7x faster cold start) while keeping the same
+                # runtime speedup. Fall back to full torch.compile if unavailable.
+                compiled_any = False
+                for component_name in ("transformer", "unet"):
+                    component = getattr(pipe, component_name, None)
+                    if component is None:
+                        continue
+                    if hasattr(component, "compile_repeated_blocks"):
+                        component.compile_repeated_blocks(fullgraph=fullgraph)
+                        compiled_any = True
+                    else:
+                        setattr(pipe, component_name, torch.compile(component, mode=compile_mode, fullgraph=fullgraph))
+                        compiled_any = True
+                if not compiled_any:
+                    return False
+                self.compiled_models[key] = True
+                record_torch_compile_probe_result(key, True)
+                return True
         except Exception as exc:
             print(f"  torch.compile skipped: {exc}")
             record_torch_compile_probe_result(key, False)
@@ -554,6 +660,24 @@ class PipelineManager:
             model_key=model_key,
             device=device,
         )
+
+    def _prepare_component_for_inference(self, component) -> None:
+        if component is None:
+            return
+        if hasattr(component, "eval"):
+            try:
+                component.eval()
+            except Exception:
+                pass
+        parameters = getattr(component, "parameters", None)
+        if not callable(parameters):
+            return
+        try:
+            for param in parameters():
+                if getattr(param, "requires_grad", False):
+                    param.requires_grad_(False)
+        except Exception:
+            pass
 
     def _set_attention_slicing(self, pipe, enabled: bool) -> None:
         if enabled:
@@ -662,6 +786,23 @@ class PipelineManager:
         except Exception as exc:
             print(f"  Z-Image INT8 optimization skipped: {exc}")
 
+    def _should_compile_flux_sdnq_vae(self, device: str) -> bool:
+        """Avoid blocking SDNQ pipeline load on expensive Windows/CUDA 13 VAE compiles."""
+        if str(device).lower() != "cuda" or not torch.cuda.is_available():
+            return False
+
+        override = os.environ.get("UFIG_COMPILE_FLUX_SDNQ_VAE")
+        if override is not None:
+            return override.strip().lower() in {"1", "true", "yes", "on"}
+
+        # On Windows/CUDA 13, torch.compile of the VAE encode/decode path can
+        # dominate (or hang) first Image Editing load. SDNQ already uses Triton
+        # quantized matmul + attention backends for the expensive transformer.
+        if os.name == "nt" and is_cuda13_runtime(getattr(torch.version, "cuda", None)):
+            return False
+
+        return self.optimization_profile != "stability"
+
     def get_cached_runtime_memory_policy(
         self,
         model_key: Optional[str],
@@ -721,11 +862,7 @@ class PipelineManager:
             optimization_profile=self.optimization_profile,
         ) if vae_tiling is None else bool(vae_tiling)
 
-        self._set_attention_slicing(pipe, enable_attn_slicing)
-        self._set_vae_slicing(pipe, enable_vae_slicing)
-        self._set_vae_tiling(pipe, enable_vae_tiling)
-
-        self.active_runtime_memory_policy = {
+        next_policy = {
             "attention_slicing": enable_attn_slicing,
             "vae_slicing": enable_vae_slicing,
             "vae_tiling": enable_vae_tiling,
@@ -733,6 +870,30 @@ class PipelineManager:
             "height": int(height or 0),
             "oom_retry": bool(oom_retry),
         }
+        next_signature = (
+            id(pipe),
+            str(model_key or ""),
+            str(device or ""),
+            next_policy["attention_slicing"],
+            next_policy["vae_slicing"],
+            next_policy["vae_tiling"],
+            next_policy["width"],
+            next_policy["height"],
+            next_policy["oom_retry"],
+        )
+        force_apply = bool(getattr(pipe, "_ufig_memory_policy_dirty", False))
+        if force_apply or self._active_runtime_policy_signature != next_signature:
+            self._set_attention_slicing(pipe, enable_attn_slicing)
+            self._set_vae_slicing(pipe, enable_vae_slicing)
+            self._set_vae_tiling(pipe, enable_vae_tiling)
+            self._active_runtime_policy_signature = next_signature
+            if force_apply:
+                try:
+                    pipe._ufig_memory_policy_dirty = False
+                except Exception:
+                    pass
+
+        self.active_runtime_memory_policy = next_policy
         return dict(self.active_runtime_memory_policy)
 
     def load_zimage_pipeline(self, device="mps", use_full_model=False):
@@ -831,6 +992,9 @@ class PipelineManager:
         pipe.transformer = transformer
         pipe.text_encoder = text_encoder
         pipe.tokenizer = tokenizer
+        self._prepare_component_for_inference(pipe.transformer)
+        self._prepare_component_for_inference(pipe.text_encoder)
+        self._prepare_component_for_inference(pipe.vae)
 
         pipe.scheduler = FlowMatchEulerDiscreteScheduler.from_config(
             pipe.scheduler.config,
@@ -880,18 +1044,19 @@ class PipelineManager:
         # lazily here to avoid slowing down the first text-to-image call.
         if device == "cuda" and torch.cuda.is_available() and hasattr(pipe, "vae") and pipe.vae is not None:
             try:
-                compile_mode = "reduce-overhead" if os.name == "nt" else "max-autotune"
-                fullgraph = False if os.name == "nt" else True
-                vae_encode_key = f"zimage-int8-vae-encode:{device}"
-                if not self.compiled_models.get(vae_encode_key) and hasattr(pipe.vae, "encode"):
-                    pipe.vae.encode = torch.compile(pipe.vae.encode, mode=compile_mode, fullgraph=fullgraph)
-                    self.compiled_models[vae_encode_key] = True
-                    print("  Z-Image VAE encoder compiled (image-edit path).")
-                vae_decode_key = f"zimage-int8-vae-decode:{device}"
-                if not self.compiled_models.get(vae_decode_key) and hasattr(pipe.vae, "decode"):
-                    pipe.vae.decode = torch.compile(pipe.vae.decode, mode=compile_mode, fullgraph=fullgraph)
-                    self.compiled_models[vae_decode_key] = True
-                    print("  Z-Image VAE decoder compiled.")
+                with json_dtype_patch_context():
+                    compile_mode = "reduce-overhead" if os.name == "nt" else "max-autotune"
+                    fullgraph = False if os.name == "nt" else True
+                    vae_encode_key = f"zimage-int8-vae-encode:{device}"
+                    if not self.compiled_models.get(vae_encode_key) and hasattr(pipe.vae, "encode"):
+                        pipe.vae.encode = torch.compile(pipe.vae.encode, mode=compile_mode, fullgraph=fullgraph)
+                        self.compiled_models[vae_encode_key] = True
+                        print("  Z-Image VAE encoder compiled (image-edit path).")
+                    vae_decode_key = f"zimage-int8-vae-decode:{device}"
+                    if not self.compiled_models.get(vae_decode_key) and hasattr(pipe.vae, "decode"):
+                        pipe.vae.decode = torch.compile(pipe.vae.decode, mode=compile_mode, fullgraph=fullgraph)
+                        self.compiled_models[vae_decode_key] = True
+                        print("  Z-Image VAE decoder compiled.")
             except Exception as exc:
                 print(f"  Z-Image VAE compile skipped: {exc}")
 
@@ -939,64 +1104,112 @@ class PipelineManager:
             return False
         if not is_flux_model(model_key):
             return False
+        if is_sdnq_or_quantized(model_key, None):
+            return False
         # Quantized models (SDNQ 4-bit, int8) are small enough to fit in GPU
         # without offloading. CPU offloading moves model components between
         # CPU/GPU each step, which is catastrophically slow (~5+ min generation).
         # Only offload when VRAM is genuinely insufficient.
         vram_gb = get_device_vram_gb(device)
         if vram_gb is not None:
-            # Non-quantized FLUX models need ~13GB+ — offload if under 12GB
-            if not is_sdnq_or_quantized(model_key, None) and vram_gb < 12:
-                return True
+            return vram_gb < 12
         return True
 
     def load_flux2_klein_pipeline(self, device="mps"):
         """Load FLUX.2-klein-4B with int8 quantized transformer and text encoder."""
+        import gc
         from transformers import Qwen3ForCausalLM, AutoTokenizer, AutoConfig
         from optimum.quanto import requantize
         from accelerate import init_empty_weights
         from src.image.quantized_flux2 import QuantizedFlux2Transformer2DModel
 
         print(f"Loading FLUX.2-klein-4B (int8 quantized) on {device}...")
+
+        # Defensive memory clearing before loading large quantized models
+        gc.collect()
+        if torch.cuda.is_available() and device == "cuda":
+            torch.cuda.empty_cache()
+
+        print("  Step 1/6: Downloading/resolving model files...")
         model_path = snapshot_download("aydin99/FLUX.2-klein-4B-int8")
 
         dtype = torch.bfloat16 if device in ["cuda", "mps"] else torch.float32
-        qtransformer = QuantizedFlux2Transformer2DModel.from_pretrained(model_path)
 
+        # For quanto-requantized models, only move to device. Do NOT call
+        # .to(dtype=...) — quanto replaces layers with QLinear which may
+        # segfault when asked to recast their quantized weights.
         def _safe_move(model):
+            # Detect quanto-wrapped models (QuantizedDiffusersModel or Qwen3ForCausalLM
+            # after requantize) and skip dtype conversion entirely.
+            # Quanto models use QLinear layers that segfault when recast via .to(dtype=...).
+            is_quanto_model = (
+                hasattr(model, "_wrapped")
+                or hasattr(model, "qconfig")
+                or getattr(model, "is_quantized", False)
+            )
+            if is_quanto_model:
+                try:
+                    model.to(device=device)
+                except Exception as exc2:
+                    print(f"    Warning: Could not move model to {device}: {exc2}")
+                return
+
             try:
                 model.to(device=device, dtype=dtype)
                 return
             except TypeError:
-                model.to(device=device)
+                # Combined device+dtype failed (typical for quanto-wrapped models)
+                # — move device only and skip dtype.
+                try:
+                    model.to(device=device)
+                except Exception as exc2:
+                    print(f"    Warning: Could not move model to {device}: {exc2}")
+                    return
             except Exception:
-                model.to(device=device)
-            try:
-                model.to(dtype=dtype)
-            except TypeError:
-                pass
-            except Exception:
-                pass
+                # Any other failure: try device-only as a last resort.
+                try:
+                    model.to(device=device)
+                except Exception as exc2:
+                    print(f"    Warning: Could not move model to {device}: {exc2}")
+                    return
 
+        print("  Step 2/6: Loading int8 quantized transformer...")
+        qtransformer = QuantizedFlux2Transformer2DModel.from_pretrained(model_path)
         _safe_move(qtransformer)
+        print("    Transformer loaded.")
 
+        # Clear cache between large component loads to minimize peak VRAM
+        gc.collect()
+        if torch.cuda.is_available() and device == "cuda":
+            torch.cuda.empty_cache()
+
+        print("  Step 3/6: Loading int8 quantized text encoder...")
         config = AutoConfig.from_pretrained(f"{model_path}/text_encoder", trust_remote_code=True)
         with init_empty_weights():
             text_encoder = Qwen3ForCausalLM(config)
 
-        with open(f"{model_path}/text_encoder/quanto_qmap.json", "r") as f:
+        with open(f"{model_path}/text_encoder/quanto_qmap.json", "r", encoding="utf-8") as f:
             qmap = json.load(f)
         state_dict = load_file(f"{model_path}/text_encoder/model.safetensors")
         requantize(text_encoder, state_dict=state_dict, quantization_map=qmap)
         text_encoder.eval()
         _safe_move(text_encoder)
+        print("    Text encoder loaded.")
 
+        # Clear cache before loading VAE to keep peak VRAM low
+        gc.collect()
+        if torch.cuda.is_available() and device == "cuda":
+            torch.cuda.empty_cache()
+
+        print("  Step 4/6: Loading tokenizer...")
         tokenizer = self._wrap_flux2_chat_template_tokenizer(
             AutoTokenizer.from_pretrained(f"{model_path}/tokenizer")
         )
+        print("    Tokenizer loaded.")
 
+        print("  Step 5/6: Loading small decoder VAE...")
         vae = self.get_flux2_small_decoder_vae(dtype)
-        print(f"  FLUX VAE: Using small decoder VAE (cached={str(dtype) in self.flux2_small_decoder_vaes})")
+        print(f"    FLUX VAE: Using small decoder VAE (cached={str(dtype) in self.flux2_small_decoder_vaes})")
         Flux2PipelineClass = self.get_flux2_pipeline_class()
         pipe_kwargs = {
             "transformer": None,
@@ -1007,6 +1220,7 @@ class PipelineManager:
         }
         pipe_kwargs["vae"] = vae
 
+        print("  Step 5b/6: Assembling pipeline skeleton...")
         pipe = Flux2PipelineClass.from_pretrained(
             "black-forest-labs/FLUX.2-klein-4B",
             **pipe_kwargs,
@@ -1017,6 +1231,10 @@ class PipelineManager:
         pipe.transformer = qtransformer._wrapped
         pipe.text_encoder = text_encoder
         pipe.tokenizer = tokenizer
+        self._prepare_component_for_inference(pipe.transformer)
+        self._prepare_component_for_inference(pipe.text_encoder)
+        self._prepare_component_for_inference(pipe.vae)
+        print("  Step 5c/6: Moving pipeline to device...")
         pipe.to(device)
 
         # Apply channels_last memory format to VAE for faster conv operations
@@ -1034,8 +1252,10 @@ class PipelineManager:
                 except Exception:
                     pass
 
+        print("  Step 6a/6: Applying memory policy...")
         self._apply_pipeline_memory_policy(pipe, model_key="flux2-klein-int8", device=device)
 
+        print("  Step 6b/6: Compiling pipeline components...")
         self.compile_pipeline_components(
             pipe,
             device,
@@ -1043,8 +1263,10 @@ class PipelineManager:
             model_key="flux2-klein-int8",
         )
 
+        print("  Step 6c/6: Installing attention backend...")
         # Attention backend cascade (SageAttention → xFormers → SDPA).
         self._install_attention_backend(pipe, device)
+        print("  FLUX.2-klein-4B (int8) loaded successfully.")
         return pipe
 
     def load_flux2_klein_sdnq_pipeline(self, device="mps", model_id="Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic"):
@@ -1083,6 +1305,9 @@ class PipelineManager:
         pipe.transformer = transformer
         pipe.text_encoder = text_encoder
         pipe.tokenizer = tokenizer
+        self._prepare_component_for_inference(pipe.transformer)
+        self._prepare_component_for_inference(pipe.text_encoder)
+        self._prepare_component_for_inference(pipe.vae)
         pipe.to(device)
 
         try:
@@ -1141,26 +1366,24 @@ class PipelineManager:
         # we never silently run on the slow math SDPA kernel.
         self._install_attention_backend(pipe, device)
 
-        # Compile VAE encoder AND decoder for faster edit / image-to-image flows.
-        # The decoder runs every generation; the encoder runs only on the edit
-        # (single- / multi-reference) code paths — but on a 3070 the first edit
-        # pays ~2-4 s of extra compile time and every subsequent edit sees a
-        # measurable speedup. Skip on SDNQ Triton paths where compile is known
-        # to be incompatible with quantized kernels.
-        if device == "cuda" and torch.cuda.is_available() and hasattr(pipe, "vae") and pipe.vae is not None:
+        # Keep SDNQ cold load responsive. VAE compile is opt-in on
+        # Windows/CUDA 13 because first-run inductor compilation can dominate
+        # or hang the Image Editing load path.
+        if self._should_compile_flux_sdnq_vae(device) and hasattr(pipe, "vae") and pipe.vae is not None:
             try:
-                compile_mode = "reduce-overhead" if os.name == "nt" else "max-autotune"
-                fullgraph = False if os.name == "nt" else True
-                vae_decode_key = f"flux2-sdnq-vae-decode:{device}"
-                if not self.compiled_models.get(vae_decode_key):
-                    pipe.vae.decode = torch.compile(pipe.vae.decode, mode=compile_mode, fullgraph=fullgraph)
-                    self.compiled_models[vae_decode_key] = True
-                    print("  FLUX SDNQ VAE decoder compiled.")
-                vae_encode_key = f"flux2-sdnq-vae-encode:{device}"
-                if not self.compiled_models.get(vae_encode_key) and hasattr(pipe.vae, "encode"):
-                    pipe.vae.encode = torch.compile(pipe.vae.encode, mode=compile_mode, fullgraph=fullgraph)
-                    self.compiled_models[vae_encode_key] = True
-                    print("  FLUX SDNQ VAE encoder compiled (image-edit path).")
+                with json_dtype_patch_context():
+                    compile_mode = "reduce-overhead" if os.name == "nt" else "max-autotune"
+                    fullgraph = False if os.name == "nt" else True
+                    vae_decode_key = f"flux2-sdnq-vae-decode:{device}"
+                    if not self.compiled_models.get(vae_decode_key):
+                        pipe.vae.decode = torch.compile(pipe.vae.decode, mode=compile_mode, fullgraph=fullgraph)
+                        self.compiled_models[vae_decode_key] = True
+                        print("  FLUX SDNQ VAE decoder compiled.")
+                    vae_encode_key = f"flux2-sdnq-vae-encode:{device}"
+                    if not self.compiled_models.get(vae_encode_key) and hasattr(pipe.vae, "encode"):
+                        pipe.vae.encode = torch.compile(pipe.vae.encode, mode=compile_mode, fullgraph=fullgraph)
+                        self.compiled_models[vae_encode_key] = True
+                        print("  FLUX SDNQ VAE encoder compiled (image-edit path).")
             except Exception as exc:
                 print(f"  FLUX SDNQ VAE compile skipped: {exc}")
 
@@ -1188,19 +1411,6 @@ class PipelineManager:
 
     def load_pipeline(self, model_choice: str, device: str = "mps"):
         """Main entry point to load or switch pipelines."""
-        # First-run accelerator probe. Installs sageattention / xformers on
-        # Windows CUDA if they're missing, so the rest of the load path can
-        # unconditionally call `_install_attention_backend` without the user
-        # having to run pip manually. Gated by UFIG_AUTO_INSTALL_ACCELERATORS
-        # and cached per-process (subsequent generations are no-ops).
-        try:
-            from src.utils.accelerator_installer import auto_install_accelerators
-            auto_install_accelerators(device=device)
-        except Exception as exc:
-            # Installer never raises, but guard anyway: an unexpected crash
-            # here must never block a generation.
-            print(f"  [accelerator-installer] probe skipped: {exc}")
-
         resolved_model_choice, fallback_reason = resolve_model_choice_for_device(
             model_choice,
             device,
@@ -1248,12 +1458,23 @@ class PipelineManager:
                 self.compiled_models.pop(_key, None)
             self.optional_accelerator_pipes.clear()
             self.active_runtime_memory_policy = {}
+            self._active_runtime_policy_signature = None
             self.active_optional_accelerator_status = {}
             if torch.cuda.is_available(): torch.cuda.empty_cache()
             if torch.backends.mps.is_available(): torch.mps.empty_cache()
 
         if model_type == "flux2-klein-int8":
-            self.pipe = self.load_flux2_klein_pipeline(device)
+            try:
+                self.pipe = self.load_flux2_klein_pipeline(device)
+            except Exception as exc:
+                print(f"\n  [CRITICAL] FLUX int8 pipeline failed to load: {exc}")
+                print("  Falling back to SDNQ 4-bit pipeline (slower but more stable on this environment).\n")
+                model_type = "flux2-klein-sdnq"
+                self.last_model_fallback_reason = (
+                    f"FLUX.2-klein-4B (int8) loading failed ({exc}); fell back to SDNQ 4-bit. "
+                    "This usually means optimum.quanto is incompatible with your PyTorch build."
+                )
+                self.pipe = self.load_flux2_klein_sdnq_pipeline(device)
         elif model_type == "flux2-klein-sdnq":
             self.pipe = self.load_flux2_klein_sdnq_pipeline(device)
         elif model_type == "zimage-int8":
@@ -1538,7 +1759,6 @@ class PipelineManager:
 
         path_map = {
             "klein_anatomy": self.klein_anatomy_lora_path,
-            "klein_hires": self.klein_hires_lora_path,
             "klein_expression": self.klein_expression_lora_path,
             "zimage_realistic": self.zimage_realistic_lora_path,
             "flux_anime2real": self.flux_anime2real_lora_path,
@@ -1552,7 +1772,6 @@ class PipelineManager:
 
         path_map = {
             "klein_anatomy": (self.klein_anatomy_lora_path, self.klein_anatomy_lora_url, "Klein Anatomy Fix"),
-            "klein_hires": (self.klein_hires_lora_path, self.klein_hires_lora_url, "Klein High-Resolution LoRA"),
             "klein_expression": (self.klein_expression_lora_path, self.klein_expression_lora_url, "Klein Face Expression Transfer LoRA"),
             "zimage_realistic": (self.zimage_realistic_lora_path, self.zimage_realistic_lora_url, "Realistic Snapshot LoRA (Z-Image)"),
             "flux_anime2real": (self.flux_anime2real_lora_path, self.flux_anime2real_lora_url, "Ultra Real Amateur Selfies LoRA (FLUX 4B)"),

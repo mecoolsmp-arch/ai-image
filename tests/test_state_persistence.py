@@ -3,6 +3,7 @@ import unittest
 
 
 APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
+CONSTANTS_PATH = Path(__file__).resolve().parents[1] / "src" / "constants.py"
 
 
 class StatePersistenceTests(unittest.TestCase):
@@ -24,7 +25,9 @@ class StatePersistenceTests(unittest.TestCase):
 
     def test_fast_flux_migration_flag_is_present(self):
         source = APP_PATH.read_text(encoding="utf-8")
-        self.assertIn('FAST_FLUX_STATE_MIGRATION_KEY = "fast_flux_default_migrated_v1"', source)
+        constants_source = CONSTANTS_PATH.read_text(encoding="utf-8")
+        self.assertIn('FAST_FLUX_STATE_MIGRATION_KEY = "fast_flux_default_migrated_v1"', constants_source)
+        self.assertIn("FAST_FLUX_STATE_MIGRATION_KEY", source)
         self.assertIn('FAST_FLUX_STATE_MIGRATION_KEY: bool(existing_state.get(FAST_FLUX_STATE_MIGRATION_KEY, False))', source)
         self.assertIn('FAST_FLUX_STATE_MIGRATION_KEY: fast_flux_state_migrated', source)
 

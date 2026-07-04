@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"],
+      "env": {},
+      "disabled": true,
+      "autoApprove": []
+    },
+    "Roblox_Studio": {
+      "command": "cmd.exe",
+      "args": ["/c", "%LOCALAPPDATA%\\Roblox\\mcp.bat"],
+      "disabled": false,
+      "autoApprove": []
+    }
+  }
+}

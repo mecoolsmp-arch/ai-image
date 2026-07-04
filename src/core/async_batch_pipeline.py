@@ -543,6 +543,7 @@ class AsyncBatchPipeline:
                         if hasattr(pipe, "enable_vae_slicing"):
                             try:
                                 pipe.enable_vae_slicing()
+                                pipe._ufig_memory_policy_dirty = True
                                 print("  OOM fallback: enabled VAE slicing for retry.")
                             except Exception:
                                 pass
@@ -596,6 +597,7 @@ class AsyncBatchPipeline:
                         if failed_chunks and hasattr(pipe, "enable_attention_slicing"):
                             try:
                                 pipe.enable_attention_slicing()
+                                pipe._ufig_memory_policy_dirty = True
                                 print("  OOM fallback: enabled attention slicing for final retry.")
                             except Exception:
                                 pass

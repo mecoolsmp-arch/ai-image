@@ -35,9 +35,6 @@ class UIState:
     enable_windows_compile_probe: bool = False
     enable_cuda_graphs: bool = False
     enable_optional_accelerators: bool = False
-    video_output_path: str = ""
-    preserve_audio: bool = True
-    video_resolution_preset: str = "~1024px"
     input_image_names: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -71,9 +68,6 @@ class UIState:
             "enable_windows_compile_probe": self.enable_windows_compile_probe,
             "enable_cuda_graphs": self.enable_cuda_graphs,
             "enable_optional_accelerators": self.enable_optional_accelerators,
-            "video_output_path": self.video_output_path,
-            "preserve_audio": self.preserve_audio,
-            "video_resolution_preset": self.video_resolution_preset,
             "input_image_names": self.input_image_names,
         }
 
@@ -109,9 +103,6 @@ class UIState:
             enable_windows_compile_probe=data.get("enable_windows_compile_probe", False),
             enable_cuda_graphs=data.get("enable_cuda_graphs", False),
             enable_optional_accelerators=data.get("enable_optional_accelerators", False),
-            video_output_path=data.get("video_output_path", ""),
-            preserve_audio=data.get("preserve_audio", True),
-            video_resolution_preset=data.get("video_resolution_preset", "~1024px"),
             input_image_names=data.get("input_image_names", []),
         )
 

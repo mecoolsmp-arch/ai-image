@@ -60,14 +60,6 @@ set "HF_HUB_DISABLE_PROGRESS_BARS=0"
 set "HF_HUB_ENABLE_HF_TRANSFER=1"
 set "HF_HUB_DISABLE_SYMLINKS_WARNING=1"
 
-REM Model configurations
-set "QWEN_TTS_CACHE_DIR=%CD%\models\qwen-tts"
-set "QWEN_TTS_DTYPE=auto"
-set "QWEN_TTS_UNLOAD_AFTER_GEN=false"
-
-set "PYANNOTE_CACHE_DIR=%CD%\cache\pyannote"
-set "WHISPER_CACHE_DIR=%CD%\cache\whisper"
-
 REM Fast-launch flags: trust verified installs and defer heavyweight startup checks.
 set "SKIP_DEPENDENCY_CHECK=1"
 set "UFIG_STARTUP_MODEL_PREFLIGHT=0"

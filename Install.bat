@@ -90,7 +90,7 @@ REM Everything else gets overwritten naturally by pip upgrade/install.
 python -m pip uninstall -y xformers flash-attn 2>nul
 
 echo Installing CUDA 13 PyTorch stack (2.10.0)...
-python -m pip install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 --index-url %CUDA_INDEX_URL%
+python -m pip install torch==2.10.0 torchvision==0.25.0 --index-url %CUDA_INDEX_URL%
 if errorlevel 1 goto install_fail
 
 echo Installing Triton for Windows (enables torch.compile + SDNQ optimizations)...
@@ -109,9 +109,6 @@ if not errorlevel 1 goto longpath_done
 echo WARNING: Could not enable long paths. Run Install.bat as Administrator.
 echo   Or manually: reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f
 :longpath_done
-
-echo Installing ONNX Runtime GPU...
-python -m pip install --upgrade --pre onnxruntime-gpu --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ort-cuda-13-nightly/pypi/simple/
 
 echo Installing project requirements from %REQ_FILE%...
 python -m pip install -r %REQ_FILE%
@@ -139,17 +136,13 @@ echo WARNING: SageAttention install failed. Attention will use default SDPA (slo
 echo This is non-critical — generation will still work, just slower attention.
 :sage_done
 
-if "%ENABLE_OPTIONAL_ACCELERATORS%"=="1" (
-  call :install_optional_accelerators
-)
-
 echo %INSTALL_PROFILE%> "%INSTALL_STAMP%"
 type nul > venv\.installed
 
 echo.
 echo Post-install cleanup: removing stale files to save disk space...
 REM Remove packages that conflict with CUDA 13 or are no longer used
-python -m pip uninstall -y xformers flash-attn whisperx 2>nul
+python -m pip uninstall -y xformers flash-attn whisperx torchaudio qwen-tts pyannote-audio speechbrain librosa imageio-ffmpeg soundfile moviepy basicsr realesrgan facexlib insightface controlnet-aux mediapipe pyannote-metrics pyannote-pipeline pytorch-metric-learning torch-audiomentations torch-pitch-shift 2>nul
 REM Clear pip download cache (wheels are installed, cache is dead weight)
 python -m pip cache purge 2>nul
 REM Remove orphaned packages that are no longer dependencies of anything
@@ -162,6 +155,10 @@ if exist "%CD%\cache\torch_inductor" (
 REM Clean up any broken/invalid package dirs from partial uninstalls
 for /d %%d in (venv\Lib\site-packages\~*) do rmdir /s /q "%%d" 2>nul
 echo Cleanup complete.
+
+if "%ENABLE_OPTIONAL_ACCELERATORS%"=="1" (
+  call :install_optional_accelerators
+)
 
 :verify
 echo.
@@ -195,10 +192,10 @@ goto done
 
 :install_optional_accelerators
 echo Optional accelerators mode enabled.
-echo Attempting xformers installation when compatible...
-python -m pip install --upgrade --pre xformers
+echo Attempting CUDA 13 xformers installation from ABI3 wheel...
+python -m pip install "https://huggingface.co/Wildminder/AI-windows-whl/resolve/main/xformers-0.0.34+torch2.10cu130-cp39-abi3-win_amd64.whl" --no-deps
 if errorlevel 1 (
-  echo WARNING: xformers install failed or unavailable for this CUDA/runtime combination. Continuing.
+  echo WARNING: xformers CUDA 13 wheel failed or is unavailable for this runtime. Continuing with SageAttention/SDPA.
 )
 exit /b 0
 

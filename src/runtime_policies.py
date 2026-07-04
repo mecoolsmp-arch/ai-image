@@ -64,6 +64,31 @@ def is_sdnq_or_quantized(model_key: Optional[str], pipe: Optional[Any] = None) -
     return False
 
 
+def is_sdnq_model(model_key: Optional[str], pipe: Optional[Any] = None) -> bool:
+    """True ONLY for SDNQ-quantized models (not optimum-quanto int8)."""
+    value = str(model_key or "").lower()
+    if "sdnq" in value:
+        return True
+
+    if pipe is None:
+        return False
+
+    try:
+        pipe_type = str(type(pipe)).lower()
+        if "sdnq" in pipe_type:
+            return True
+        transformer = getattr(pipe, "transformer", None)
+        if transformer is not None:
+            if "sdnq" in str(type(transformer)).lower():
+                return True
+            if "sdnq" in str(transformer).lower():
+                return True
+    except Exception:
+        pass
+
+    return False
+
+
 def is_windows_3070_fast_profile(
     device: str,
     vram_gb: Optional[float] = None,
@@ -205,6 +230,7 @@ def is_klein_distilled_model(model_key: Optional[str]) -> bool:
 def resolve_default_inference_steps(
     model_key: Optional[str],
     requested_steps: Optional[int],
+    optimization_profile: Optional[str] = None,
 ) -> int:
     """
     Clamp step count for distilled models whose quality plateaus at ~4 steps.
@@ -212,6 +238,8 @@ def resolve_default_inference_steps(
     - FLUX.2 [klein] distilled (4B/9B) — official recipe is 4 steps; going
       above ~8 is pure overhead with no quality gain.
     - Z-Image Turbo — 4-step model with identical behavior.
+    - max_speed profile clamps to the official 4-step recipe for minimum
+      latency; stability allows up to 8 steps for slightly better quality.
     - Everything else is passed through unchanged.
     """
     try:
@@ -222,12 +250,14 @@ def resolve_default_inference_steps(
         requested = 4
 
     if is_klein_distilled_model(model_key) or is_zimage_model(model_key):
+        if str(optimization_profile or "").strip().lower() == "max_speed":
+            return max(1, min(requested, 4))
         return max(1, min(requested, 8))
     return requested
 
 
 def resolve_generation_guidance(model_key: Optional[str], guidance: float) -> float:
-    final_guidance = float(guidance)
+    final_guidance = 3.5 if guidance is None else float(guidance)
     # Z-Image Turbo models require guidance_scale=0.0 (no classifier-free
     # guidance). The official model card states: "Guidance should be 0 for
     # the Turbo models."
@@ -396,7 +426,7 @@ def should_probe_torch_compile(
         return False
     if optimization_profile == "stability":
         return False
-    if is_sdnq_or_quantized(model_key, pipe):
+    if is_sdnq_model(model_key, pipe):
         return False
 
     status = get_torch_compile_probe_status(cache_key)
