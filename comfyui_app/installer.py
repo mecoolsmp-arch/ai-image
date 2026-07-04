@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from comfyui_app.config import COMFYUI_DIR, DOTENV_PATH, REPO_ROOT, get_hf_token
-from comfyui_app.model_resolver import ModelResolverError, download_models, resolve_models
+from comfyui_app.model_resolver import ModelResolverError, download_models, resolve_depth_control_models, resolve_models
 from comfyui_app.vram import detect_vram, select_tier
 
 logger = logging.getLogger(__name__)
@@ -128,6 +128,20 @@ def _install_rtx_vsr_support() -> None:
         print("RTX video super-resolution will not be available, so the app will use Real-ESRGAN.")
 
 
+def _install_depth_control_support() -> None:
+    print("Trying to add the depth pose/shape lock assets...")
+    try:
+        custom_nodes = COMFYUI_DIR / "custom_nodes"
+        custom_nodes.mkdir(parents=True, exist_ok=True)
+        _install_custom_node(
+            "https://github.com/Fannovel16/comfyui_controlnet_aux.git",
+            custom_nodes / "comfyui_controlnet_aux",
+        )
+    except Exception as exc:
+        print(f"WARNING: The ControlNet Aux custom node could not be prepared: {exc}")
+        print("Pose/Shape lock (depth) will not be available.")
+
+
 def _refresh_models() -> None:
     token = _get_token_from_user()
     vram_gb, device_name, cuda_available = detect_vram()
@@ -150,6 +164,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Also try the optional Nunchaku experimental speed path.",
     )
+    parser.add_argument(
+        "--with-depth-control",
+        action="store_true",
+        help="Also install the optional FLUX.2 depth pose/shape lock assets.",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -164,6 +183,11 @@ def main(argv: list[str] | None = None) -> int:
             if args.with_experimental_speedups:
                 _install_experimental_speedups()
         _refresh_models()
+        if args.with_depth_control:
+            token = _get_token_from_user()
+            depth_resolved = resolve_depth_control_models(token)
+            download_models(depth_resolved, token, progress_cb=print)
+            _install_depth_control_support()
     except ModelResolverError as exc:
         print(exc.message)
         return 2

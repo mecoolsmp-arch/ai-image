@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from comfyui_app import batch, video_frames
+from comfyui_app import app, batch, video_frames
 from comfyui_app.generation import GenerationResult
 from comfyui_app.workflow_builder import build_esrgan_upscale_prompt, build_rtx_upscale_prompt
 
@@ -120,3 +120,27 @@ def test_build_frames_to_video_command_omits_audio_when_missing(monkeypatch) -> 
     assert "-map" not in command
     assert "aac" not in command
     assert command[-1] == "out.mp4"
+
+
+def test_image_edit_handler_routes_to_depth_path_only_when_enabled(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    def fake_run_edit(*args, **kwargs):
+        calls.append(("edit", args, kwargs))
+        return GenerationResult(image_path=Path("edit.png"), status="edit")
+
+    def fake_run_depth_edit(*args, **kwargs):
+        calls.append(("depth", args, kwargs))
+        return GenerationResult(image_path=Path("depth.png"), status="depth")
+
+    monkeypatch.setattr(app, "run_edit", fake_run_edit)
+    monkeypatch.setattr(app, "run_depth_edit", fake_run_depth_edit)
+
+    result = app._edit_handler("input.png", None, "prompt", "negative", "out", 4, 1.0, 1.0, 0, "default", False, False, False)
+    assert result == ("edit.png", "edit")
+    assert calls[0][0] == "edit"
+
+    calls.clear()
+    result = app._edit_handler("input.png", "reference.png", "prompt", "negative", "out", 4, 1.0, 1.0, 0, "default", False, False, True)
+    assert result == ("depth.png", "depth")
+    assert calls[0][0] == "depth"

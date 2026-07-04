@@ -11,6 +11,12 @@ TORCH_COMPILE_NODE_CLASS = "TorchCompileModel"
 # Verified from nunchaku-ai/ComfyUI-nunchaku nodes/models/flux.py:
 # class_type / mapping key is "NunchakuFluxDiTLoader".
 NUNCHAKU_DIT_LOADER_CLASS = "NunchakuFluxDiTLoader"
+BASE_FLUX2_KLEIN_FP8_MODEL = "flux-2-klein-base-4b-fp8.safetensors"
+DEPTH_REFCONTROL_LORA_MODEL = "flux2_klein_4b_refcontrol_depth.safetensors"
+DEPTH_ANYTHING_V2_PREPROCESSOR_CLASS = "DepthAnythingV2Preprocessor"
+LORA_LOADER_MODEL_ONLY_CLASS = "LoraLoaderModelOnly"
+REFERENCE_LATENT_CLASS = "ReferenceLatent"
+REFCONTROL_TRIGGER = "refcontrol"
 UPSCALE_MODEL_LOADER_CLASS = "UpscaleModelLoader"
 IMAGE_UPSCALE_WITH_MODEL_CLASS = "ImageUpscaleWithModel"
 SPLIT_SIGMAS_DENOISE_CLASS = "SplitSigmasDenoise"
@@ -370,6 +376,77 @@ def build_mrflow_edit_prompt(
     nodes["31"] = _node("SaveImage", images=_link("30"), filename_prefix="Flux2-Klein-MrFlow")
     if use_torch_compile:
         _apply_torch_compile(nodes)
+    return nodes
+
+
+def _ensure_refcontrol_prompt(prompt: str) -> str:
+    lowered = prompt.lower()
+    if REFCONTROL_TRIGGER in lowered:
+        return prompt
+    return f"{REFCONTROL_TRIGGER}, {prompt}" if prompt else REFCONTROL_TRIGGER
+
+
+def build_depth_refcontrol_edit_prompt(
+    *,
+    diffusion_model: str,
+    text_encoder_model: str,
+    vae_model: str,
+    lora_model_name: str,
+    reference_image_name: str,
+    structure_image_name: str,
+    prompt: str,
+    negative: str,
+    seed: int,
+    steps: int = 20,
+    cfg: float = 5.0,
+    lora_strength: float = 1.0,
+) -> dict[str, Any]:
+    positive_prompt = _ensure_refcontrol_prompt(prompt)
+    nodes: dict[str, Any] = {
+        "1": _node("UNETLoader", unet_name=diffusion_model, weight_dtype="default"),
+        "2": _node("CLIPLoader", clip_name=text_encoder_model, type="flux2", device="default"),
+        "3": _node("VAELoader", vae_name=vae_model),
+        "4": _node(LORA_LOADER_MODEL_ONLY_CLASS, model=_link("1"), lora_name=lora_model_name, strength_model=lora_strength),
+        "5": _node("CLIPTextEncode", clip=_link("2"), text=positive_prompt),
+        "6": _node("CLIPTextEncode", clip=_link("2"), text=negative),
+        "7": _node("LoadImage", image=reference_image_name),
+        "8": _node(
+            "ImageScaleToTotalPixels",
+            image=_link("7"),
+            upscale_method="nearest-exact",
+            megapixels=1.0,
+            resolution_steps=1,
+        ),
+        "9": _node("VAEEncode", pixels=_link("8"), vae=_link("3")),
+        "10": _node(REFERENCE_LATENT_CLASS, conditioning=_link("5"), latent=_link("9")),
+        "11": _node(REFERENCE_LATENT_CLASS, conditioning=_link("6"), latent=_link("9")),
+        "12": _node("LoadImage", image=structure_image_name),
+        "13": _node(DEPTH_ANYTHING_V2_PREPROCESSOR_CLASS, image=_link("12"), ckpt_name="depth_anything_v2_vitl.pth", resolution=512),
+        "14": _node(
+            "ImageScaleToTotalPixels",
+            image=_link("13"),
+            upscale_method="nearest-exact",
+            megapixels=1.0,
+            resolution_steps=1,
+        ),
+        "15": _node("VAEEncode", pixels=_link("14"), vae=_link("3")),
+        "16": _node(REFERENCE_LATENT_CLASS, conditioning=_link("10"), latent=_link("15")),
+        "17": _node(REFERENCE_LATENT_CLASS, conditioning=_link("11"), latent=_link("15")),
+        "18": _node("Flux2Scheduler", steps=steps, width=1024, height=1024),
+        "19": _node("KSamplerSelect", sampler_name="euler"),
+        "20": _node("RandomNoise", noise_seed=seed),
+        "21": _node("CFGGuider", model=_link("4"), positive=_link("16"), negative=_link("17"), cfg=cfg),
+        "22": _node(
+            "SamplerCustomAdvanced",
+            noise=_link("20"),
+            guider=_link("21"),
+            sampler=_link("19"),
+            sigmas=_link("18"),
+            latent_image=_link("15"),
+        ),
+        "23": _node("VAEDecode", samples=_link("22"), vae=_link("3")),
+        "24": _node("SaveImage", images=_link("23"), filename_prefix="Flux2-Klein-RefControl-Depth"),
+    }
     return nodes
 
 

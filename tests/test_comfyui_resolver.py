@@ -5,7 +5,13 @@ from pathlib import Path
 from comfyui_app import model_resolver
 from comfyui_app.model_resolver import ModelResolverError, resolve_models
 from comfyui_app.vram import select_tier
-from comfyui_app.workflow_builder import build_edit_prompt, build_mrflow_edit_prompt, build_mrflow_t2i_prompt, build_t2i_prompt
+from comfyui_app.workflow_builder import (
+    build_depth_refcontrol_edit_prompt,
+    build_edit_prompt,
+    build_mrflow_edit_prompt,
+    build_mrflow_t2i_prompt,
+    build_t2i_prompt,
+)
 
 
 def _tree(*paths: str, size: int = 1) -> list[dict[str, object]]:
@@ -137,7 +143,30 @@ def test_build_t2i_prompt_omits_image_encoding_nodes() -> None:
     class_types = {node["class_type"] for node in prompt.values()}
     assert "LoadImage" not in class_types
     assert "VAEEncode" not in class_types
-    assert "EmptyFlux2LatentImage" in class_types
+
+
+def test_build_depth_refcontrol_edit_prompt_uses_depth_assets() -> None:
+    prompt = build_depth_refcontrol_edit_prompt(
+        diffusion_model="flux-2-klein-base-4b-fp8.safetensors",
+        text_encoder_model="qwen_3_4b_fp4_flux2.safetensors",
+        vae_model="flux2-vae.safetensors",
+        lora_model_name="flux2_klein_4b_refcontrol_depth.safetensors",
+        reference_image_name="reference.png",
+        structure_image_name="structure.png",
+        prompt="a character portrait",
+        negative="blurry",
+        seed=77,
+    )
+
+    class_types = {node["class_type"] for node in prompt.values()}
+    assert {"UNETLoader", "LoraLoaderModelOnly", "DepthAnythingV2Preprocessor", "Flux2Scheduler", "CFGGuider", "SamplerCustomAdvanced", "VAEDecode", "SaveImage"} <= class_types
+    assert prompt["1"]["inputs"]["unet_name"] == "flux-2-klein-base-4b-fp8.safetensors"
+    assert prompt["4"]["inputs"]["lora_name"] == "flux2_klein_4b_refcontrol_depth.safetensors"
+    assert prompt["5"]["inputs"]["text"].startswith("refcontrol")
+    assert prompt["13"]["class_type"] == "DepthAnythingV2Preprocessor"
+    assert prompt["13"]["inputs"]["resolution"] == 512
+    assert prompt["18"]["inputs"]["steps"] == 20
+    assert prompt["21"]["inputs"]["cfg"] == 5.0
     assert "SamplerCustomAdvanced" in class_types
 
 

@@ -45,7 +45,7 @@ ComfyUI itself listens on `127.0.0.1:8188`.
 
 ## App tabs
 
-- **Image Edit** - upload an image, edit it with FLUX.2 Klein, and save the result.
+- **Image Edit** - upload a depth source image, optionally add a separate reference image, and edit with FLUX.2 Klein.
 - **Video to Frames** - extract frames from a video, then optionally batch-edit the extracted frames.
 - **Batch Folder** - batch-edit a folder of images.
 - **Text-to-Image** - generate from scratch.
@@ -62,6 +62,7 @@ The resolver writes into the standard ComfyUI folders:
 - `ComfyUI/models/text_encoders/`
 - `ComfyUI/models/vae/`
 - `ComfyUI/models/upscale_models/`
+- `ComfyUI/models/loras/`
 
 ## Upscaling
 
@@ -156,6 +157,36 @@ Notes:
 - It is off by default.
 
 The app auto-downloads `RealESRGAN_x2plus.pth` into `ComfyUI/models/upscale_models/` during the normal model refresh.
+
+## Pose/Shape lock (depth reference) - optional
+
+The depth Pose/Shape lock path uses the **RefControl** depth LoRA for FLUX.2 Klein 4B.
+
+What it does:
+
+- runs the input image through `DepthAnythingV2Preprocessor`
+- uses that depth map to lock pose / shape
+- optionally uses a second reference image for identity/style
+- keeps the normal fast 4-step distilled paths unchanged when the checkbox is off
+
+Requirements:
+
+- base model: `black-forest-labs/FLUX.2-klein-base-4b-fp8`
+- depth LoRA: `thedeoxen/refcontrol-FLUX.2-klein-4B-reference-depth-lora`
+- custom node: `Fannovel16/comfyui_controlnet_aux`
+
+Install it with:
+
+```bat
+python -m comfyui_app.installer --with-depth-control
+```
+
+Notes:
+
+- Trigger word: `refcontrol`
+- This path uses the undistilled base model, so it is slower than the normal 4-step edit path.
+- Expect roughly a ~20 step workflow and about a 5x slowdown versus the distilled edit path.
+- For FLUX.2 Klein 4B, only the **depth** lock mode is available here.
 
 ## Dependencies
 

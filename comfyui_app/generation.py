@@ -20,6 +20,7 @@ from comfyui_app.workflow_builder import (
     DEFAULT_UPSCALE_MODEL,
     build_edit_prompt,
     build_esrgan_upscale_prompt,
+    build_depth_refcontrol_edit_prompt,
     build_mrflow_edit_prompt,
     build_mrflow_t2i_prompt,
     build_rtx_upscale_prompt,
@@ -95,6 +96,32 @@ def _image_dimensions(image_path: Path) -> tuple[int, int]:
     with Image.open(image_path) as image:
         width, height = image.size
     return width, height
+
+
+def _depth_control_assets() -> tuple[str, str]:
+    manifest = load_resolved_manifest()
+    if not isinstance(manifest, dict):
+        raise ModelResolverError(
+            "Pose/Shape lock (depth) is not installed. Re-run Install.bat with --with-depth-control."
+        )
+    models = manifest.get("models")
+    if not isinstance(models, dict):
+        raise ModelResolverError(
+            "Pose/Shape lock (depth) is not installed. Re-run Install.bat with --with-depth-control."
+        )
+    base = models.get("depth_control_base")
+    lora = models.get("depth_control_lora")
+    if not isinstance(base, dict) or not isinstance(lora, dict):
+        raise ModelResolverError(
+            "Pose/Shape lock (depth) is not installed. Re-run Install.bat with --with-depth-control."
+        )
+    base_name = str(base.get("local_filename") or "")
+    lora_name = str(lora.get("local_filename") or "")
+    if not base_name or not lora_name:
+        raise ModelResolverError(
+            "Pose/Shape lock (depth) is not installed. Re-run Install.bat with --with-depth-control."
+        )
+    return base_name, lora_name
 
 
 def _resolved_filename_map(vram_gb: float, prefer_gguf: bool, engine: str) -> dict[str, str]:
@@ -404,3 +431,44 @@ def run_upscale(
         return _run_prompt(client, prompt_dict, target_dir, output_name, timeout)
     except Exception as exc:
         raise exc
+
+
+def run_depth_edit(
+    image_path: str | Path,
+    reference_image_path: str | Path | None,
+    prompt: str,
+    negative: str,
+    output_dir: str | Path,
+    *,
+    steps: int = 20,
+    cfg: float = 5.0,
+    seed: int = 0,
+    lora_strength: float = 1.0,
+    timeout: float = 600.0,
+    client: ComfyClient | None = None,
+) -> GenerationResult:
+    client = client or ComfyClient(COMFYUI_HOST, COMFYUI_PORT)
+    depth_source_path = Path(image_path)
+    reference_path = Path(reference_image_path) if reference_image_path is not None else depth_source_path
+    target_dir = Path(output_dir)
+    vram_gb, _, _ = detect_vram()
+    filenames = _resolved_filename_map(vram_gb, False, "default")
+    depth_base_model, depth_lora_model = _depth_control_assets()
+    depth_source_name = client.upload_image(depth_source_path)
+    reference_name = client.upload_image(reference_path) if reference_path != depth_source_path else depth_source_name
+    prompt_dict = build_depth_refcontrol_edit_prompt(
+        diffusion_model=depth_base_model,
+        text_encoder_model=filenames["text_encoder"],
+        vae_model=filenames["vae"],
+        lora_model_name=depth_lora_model,
+        reference_image_name=reference_name,
+        structure_image_name=depth_source_name,
+        prompt=prompt,
+        negative=negative,
+        seed=seed,
+        steps=steps,
+        cfg=cfg,
+        lora_strength=lora_strength,
+    )
+    output_name = _output_name(depth_source_path, "depth_edit", seed)
+    return _run_prompt(client, prompt_dict, target_dir, output_name, timeout)

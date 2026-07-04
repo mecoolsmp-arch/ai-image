@@ -15,7 +15,7 @@ except Exception:  # pragma: no cover - optional dependency
 from comfyui_app.batch import CANCEL_EVENT, clear_cancel, iter_process_folder, process_folder, request_cancel
 from comfyui_app.comfy_client import ComfyClient
 from comfyui_app.config import COMFYUI_HOST, COMFYUI_PORT, DEFAULT_OUTPUT_DIR
-from comfyui_app.generation import GenerationResult, run_edit, run_t2i, run_upscale
+from comfyui_app.generation import GenerationResult, run_depth_edit, run_edit, run_t2i, run_upscale
 from comfyui_app.model_resolver import ModelResolverError, load_resolved_manifest
 from comfyui_app.ui_utils import pick_directory
 from comfyui_app.vram import detect_vram, select_tier
@@ -51,6 +51,15 @@ def _component_path(value: object) -> Path:
             if isinstance(item, str) and item:
                 return Path(item)
     return Path(str(value))
+
+
+def _optional_component_path(value: object) -> Path | None:
+    if value in (None, ""):
+        return None
+    try:
+        return _component_path(value)
+    except Exception:
+        return None
 
 
 def _status_markdown() -> str:
@@ -91,6 +100,7 @@ def _stop_current_job() -> str:
 
 def _edit_handler(
     input_image: object,
+    reference_image: object,
     prompt: str,
     negative: str,
     output_dir: str,
@@ -101,21 +111,34 @@ def _edit_handler(
     engine: str,
     use_torch_compile: bool,
     mrflow: bool,
+    depth_lock: bool,
 ) -> tuple[str | None, str]:
     try:
-        result = run_edit(
-            _component_path(input_image),
-            prompt,
-            negative,
-            output_dir,
-            steps=int(steps),
-            cfg=float(cfg),
-            seed=int(seed),
-            megapixels=float(megapixels),
-            engine=engine,
-            use_torch_compile=bool(use_torch_compile),
-            mrflow=bool(mrflow),
-        )
+        input_path = _component_path(input_image)
+        reference_path = _optional_component_path(reference_image)
+        if depth_lock:
+            result = run_depth_edit(
+                input_path,
+                reference_path,
+                prompt,
+                negative,
+                output_dir,
+                seed=int(seed),
+            )
+        else:
+            result = run_edit(
+                input_path,
+                prompt,
+                negative,
+                output_dir,
+                steps=int(steps),
+                cfg=float(cfg),
+                seed=int(seed),
+                megapixels=float(megapixels),
+                engine=engine,
+                use_torch_compile=bool(use_torch_compile),
+                mrflow=bool(mrflow),
+            )
         return str(result.image_path), result.status
     except Exception as exc:
         return None, _friendly_error(exc)
@@ -351,7 +374,8 @@ def build_app() -> "gr.Blocks":
         with gr.Tab("Image Edit"):
             with gr.Row():
                 with gr.Column():
-                    edit_image = gr.Image(label="Image", type="filepath")
+                    edit_image = gr.Image(label="Depth source image", type="filepath")
+                    edit_reference = gr.Image(label="Reference / identity image (optional)", type="filepath")
                     edit_prompt = gr.Textbox(label="Prompt", lines=4)
                     edit_negative = gr.Textbox(label="Negative prompt", lines=3)
                 with gr.Column():
@@ -369,13 +393,17 @@ def build_app() -> "gr.Blocks":
                         label="MrFlow staged (experimental - faster; low-res generate + upscale + refine)",
                         value=False,
                     )
+                    edit_depth_lock = gr.Checkbox(
+                        label="Pose/Shape lock (depth reference) — experimental, slower (~20 steps, base model)",
+                        value=False,
+                    )
                     edit_button = gr.Button("Generate")
                     edit_stop = gr.Button("Stop")
                     edit_result = gr.Image(label="Result")
                     edit_status = gr.Textbox(label="Status")
             edit_run = edit_button.click(
                 fn=_edit_handler,
-                inputs=[edit_image, edit_prompt, edit_negative, edit_output, edit_steps, edit_cfg, edit_megapixels, edit_seed, edit_engine, edit_compile, edit_mrflow],
+                inputs=[edit_image, edit_reference, edit_prompt, edit_negative, edit_output, edit_steps, edit_cfg, edit_megapixels, edit_seed, edit_engine, edit_compile, edit_mrflow, edit_depth_lock],
                 outputs=[edit_result, edit_status],
             )
             edit_stop.click(fn=_stop_current_job, outputs=edit_status, cancels=[edit_run])

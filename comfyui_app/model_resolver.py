@@ -95,6 +95,26 @@ MODEL_REGISTRY: dict[str, dict[str, list[Candidate]]] = {
             )
         ],
     },
+    "depth_control": {
+        "base_fp8": [
+            Candidate(
+                repo="black-forest-labs/FLUX.2-klein-base-4b-fp8",
+                path_regex=r"(^|/)flux-2-klein-base-4b-fp8\.safetensors$",
+                dest_subdir="diffusion_models",
+                min_vram=7.0,
+                kind="flux-2-klein-base-4b-fp8.safetensors",
+            )
+        ],
+        "refcontrol_depth_lora": [
+            Candidate(
+                repo="thedeoxen/refcontrol-FLUX.2-klein-4B-reference-depth-lora",
+                path_regex=r"(^|/)flux2_klein_4b_refcontrol_depth\.safetensors$",
+                dest_subdir="loras",
+                min_vram=0.0,
+                kind="flux2_klein_4b_refcontrol_depth.safetensors",
+            )
+        ],
+    },
     "text_encoder": {
         "flux2_fp4": [
             Candidate(
@@ -244,6 +264,17 @@ def resolve_models(
     return resolved
 
 
+def resolve_depth_control_models(token: str | None) -> dict[str, dict[str, object]]:
+    if not token:
+        raise ModelResolverError(
+            "A Hugging Face token is required to download the depth-control models. Run setup and paste your token first."
+        )
+    return {
+        "depth_control_base": _select_candidate_for_key("depth_control", "base_fp8", token),
+        "depth_control_lora": _select_candidate_for_key("depth_control", "refcontrol_depth_lora", token),
+    }
+
+
 def load_resolved_manifest(manifest_path: Path | None = None) -> dict[str, object] | None:
     paths = [manifest_path] if manifest_path is not None else [RESOLVED_MANIFEST, COMFYUI_MANIFEST]
     for path in paths:
@@ -276,11 +307,16 @@ def download_models(
     if hf_hub_download is None:
         raise ModelResolverError("huggingface_hub is not installed, so model downloads cannot continue.")
 
+    existing_manifest = load_resolved_manifest()
     manifest = {
         "engine": engine,
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "models": {},
     }
+    if isinstance(existing_manifest, dict):
+        previous_models = existing_manifest.get("models")
+        if isinstance(previous_models, dict):
+            manifest["models"].update({name: dict(info) for name, info in previous_models.items() if isinstance(info, dict)})
     downloaded: dict[str, dict[str, object]] = {}
     for name, info in resolved.items():
         dest_dir = Path(str(info["dest_dir"]))
@@ -289,7 +325,6 @@ def download_models(
         local_filename = str(info["local_filename"])
         final_path = dest_dir / local_filename
         size = int(info.get("size") or 0)
-        existing_manifest = load_resolved_manifest()
         previous = None
         if isinstance(existing_manifest, dict):
             models = existing_manifest.get("models")
