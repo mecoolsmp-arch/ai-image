@@ -38,7 +38,7 @@ if errorlevel 1 (
 )
 
 echo Refreshing ComfyUI, custom nodes, and models...
-python -m comfyui_app.installer
+python -m comfyui_app.installer %*
 if errorlevel 1 (
   echo ERROR: The ComfyUI update step failed.
   exit /b 1

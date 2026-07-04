@@ -62,7 +62,7 @@ if errorlevel 1 (
 )
 
 echo Running the ComfyUI setup tool...
-python -m comfyui_app.installer
+python -m comfyui_app.installer %*
 if errorlevel 1 (
   echo.
   echo Setup did not finish successfully.
