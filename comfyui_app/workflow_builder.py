@@ -510,6 +510,9 @@ def build_depth_refcontrol_edit_prompt(
         "26": _node("VAEDecode", samples=_link("25"), vae=_link("3")),
         "27": _node("SaveImage", images=_link("26"), filename_prefix="Flux2-Klein-RefControl-Depth"),
     }
+    if use_teacache:
+        model_link = _apply_teacache(nodes, model_link)
+        nodes["24"]["inputs"]["model"] = model_link
     return nodes
 
 

@@ -150,7 +150,7 @@ Sources:
 
 - **SageAttention 2** is optional and can be installed with `Install-SageAttention.bat`. `Install.bat --with-experimental-speedups` also installs the matching wheel automatically.
 - **TeaCache** is optional and experimental. Install it with `Install-TeaCache.bat`, or let `Install.bat --with-experimental-speedups` install the custom node for you.
-  - On ComfyUI v0.27.0+, TeaCache works on the plain edit, text-to-image, and consistency-LoRA paths. It is automatically skipped on the depth-LoRA path because ComfyUI-TeaCache has not kept up with ComfyUI's reference-latent FLUX forward signature (`timestep_zero_index`). TeaCache's benefit on the distilled FLUX.2 Klein 4B is marginal anyway - it only meaningfully skips steps on high-step (20+) non-distilled flows.
+  - After re-running `Install-TeaCache.bat`, the node is patched to accept ComfyUI v0.27.0's `timestep_zero_index` kwarg, so TeaCache no longer crashes on edit, batch, or depth. The patch accepts-and-ignores that arg, so reference-latent behavior may differ slightly; TeaCache still only helps on high-step runs (20+), and does almost nothing at the distilled Klein 4B default of ~4 steps.
 - **Nunchaku INT4** is experimental but can be much faster. Use the `tonera/FLUX.2-klein-4B-Nunchaku` INT4 checkpoint and the experimental installer path if you want to try it.
 - **torch.compile** is available in the UI. It requires Triton on Windows, which is installed via the experimental speedups path (`--with-experimental-speedups`). The gain on Ampere is limited, but it can help after warmup. The first run is slower and resolution changes recompile.
 

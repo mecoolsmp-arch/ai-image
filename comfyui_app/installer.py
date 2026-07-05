@@ -104,11 +104,15 @@ def _install_teacache_support() -> None:
     target_dir = custom_nodes / "ComfyUI-TeaCache"
     _install_custom_node("https://github.com/welltop-cn/ComfyUI-TeaCache.git", target_dir)
     try:
-        patched = _patch_teacache_lightricks_import(target_dir / "nodes.py")
-        if patched:
+        nodes_py = target_dir / "nodes.py"
+        patched_import = _patch_teacache_lightricks_import(nodes_py)
+        patched_signature = _patch_teacache_flux_forward_signature(nodes_py)
+        if patched_import:
             print("Patched TeaCache to tolerate current ComfyUI Lightricks imports.")
+        if patched_signature:
+            print("Patched TeaCache to accept ComfyUI v0.27.0 timestep_zero_index kwargs.")
     except Exception as exc:
-        print(f"WARNING: The TeaCache Lightricks import patch could not be applied: {exc}")
+        print(f"WARNING: The TeaCache patches could not be applied: {exc}")
         print("TeaCache will keep working for Flux paths if the module still imports.")
 
 
@@ -133,6 +137,26 @@ def _patch_teacache_lightricks_import(nodes_py: Path) -> bool:
     if original not in text:
         return False
     nodes_py.write_text(text.replace(original, patched, 1), encoding="utf-8")
+    return True
+
+
+def _patch_teacache_flux_forward_signature(nodes_py: Path) -> bool:
+    if not nodes_py.exists():
+        return False
+    text = nodes_py.read_text(encoding="utf-8")
+    match = re.search(r"def\s+teacache_flux_forward\s*\((.*?)\)\s*->\s*Tensor\s*:", text, re.DOTALL)
+    if match is None:
+        return False
+    signature_text = match.group(1)
+    if "timestep_zero_index" in signature_text and "**kwargs" in signature_text:
+        return False
+    parts = [part.strip().rstrip(",") for part in signature_text.split(",") if part.strip()]
+    if "timestep_zero_index" not in signature_text:
+        parts.append("timestep_zero_index=None")
+    if "**kwargs" not in signature_text:
+        parts.append("**kwargs")
+    patched_signature = "def teacache_flux_forward(\n    " + ",\n    ".join(parts) + "\n) -> Tensor:"
+    nodes_py.write_text(text[: match.start()] + patched_signature + text[match.end() :], encoding="utf-8")
     return True
 
 

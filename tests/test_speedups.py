@@ -74,3 +74,47 @@ def test_patch_teacache_lightricks_import_leaves_unmatched_content_unchanged(tmp
 
     assert patched is False
     assert nodes_py.read_text(encoding="utf-8") == original_text
+
+
+def test_patch_teacache_flux_forward_signature_rewrites_and_is_idempotent(tmp_path: Path) -> None:
+    nodes_py = tmp_path / "nodes.py"
+    original_text = (
+        "def teacache_flux_forward(\n"
+        "    self,\n"
+        "    img: Tensor,\n"
+        "    img_ids: Tensor,\n"
+        "    txt: Tensor,\n"
+        "    txt_ids: Tensor,\n"
+        "    timesteps: Tensor,\n"
+        "    y: Tensor,\n"
+        "    guidance: Tensor = None,\n"
+        "    control = None,\n"
+        "    transformer_options={},\n"
+        "    attn_mask: Tensor = None,\n"
+        "    ) -> Tensor:\n"
+        "    return img\n"
+    )
+    nodes_py.write_text(original_text, encoding="utf-8")
+
+    patched = installer._patch_teacache_flux_forward_signature(nodes_py)
+    first_pass = nodes_py.read_text(encoding="utf-8")
+    second = installer._patch_teacache_flux_forward_signature(nodes_py)
+    second_pass = nodes_py.read_text(encoding="utf-8")
+
+    assert patched is True
+    assert "def teacache_flux_forward(" in first_pass
+    assert "timestep_zero_index=None" in first_pass
+    assert "**kwargs" in first_pass
+    assert second is False
+    assert second_pass == first_pass
+
+
+def test_patch_teacache_flux_forward_signature_leaves_unmatched_content_unchanged(tmp_path: Path) -> None:
+    nodes_py = tmp_path / "nodes.py"
+    original_text = "print('no flux forward here')\n"
+    nodes_py.write_text(original_text, encoding="utf-8")
+
+    patched = installer._patch_teacache_flux_forward_signature(nodes_py)
+
+    assert patched is False
+    assert nodes_py.read_text(encoding="utf-8") == original_text

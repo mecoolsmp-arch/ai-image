@@ -595,7 +595,7 @@ def test_run_depth_edit_uses_requested_base_variant(monkeypatch, tmp_path: Path)
     assert result.image_path.read_text(encoding="utf-8") == "final"
 
 
-def test_run_depth_edit_skips_teacache_but_reports_it(monkeypatch, tmp_path: Path) -> None:
+def test_run_depth_edit_forwards_teacache_to_depth_builder(monkeypatch, tmp_path: Path) -> None:
     from comfyui_app import generation
 
     recorded: dict[str, object] = {}
@@ -644,10 +644,9 @@ def test_run_depth_edit_skips_teacache_but_reports_it(monkeypatch, tmp_path: Pat
 
     result = generation.run_depth_edit(tmp_path / "input.png", None, "prompt", "negative", tmp_path, use_teacache=True, client=FakeClient())
     assert recorded["depth_assets_called"] is True
-    assert recorded["build_kwargs"]["use_teacache"] is False
+    assert recorded["build_kwargs"]["use_teacache"] is True
     assert recorded["diffusion_model"] == "base.safetensors"
     assert result.status.startswith("Saved image to ")
-    assert "TeaCache skipped on depth path." in result.status
     assert result.preview_path is not None
     assert result.preview_path.read_text(encoding="utf-8") == "depth"
     assert result.image_path.read_text(encoding="utf-8") == "final"
