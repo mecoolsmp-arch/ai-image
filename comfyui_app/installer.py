@@ -69,7 +69,7 @@ def _sageattention_wheel_url() -> str | None:
         return "https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows.post3/sageattention-2.2.0+cu128torch2.7.1.post3-cp39-abi3-win_amd64.whl"
     if minor == 8 and cuda_version.startswith("12."):
         return "https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows.post3/sageattention-2.2.0+cu128torch2.8.0.post3-cp39-abi3-win_amd64.whl"
-    if minor == 9 and (cuda_version.startswith("12.") or cuda_version.startswith("13.")):
+    if minor >= 9 and (cuda_version.startswith("12.") or cuda_version.startswith("13.")):
         wheel = "sageattention-2.2.0+cu130torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl" if cuda_version.startswith("13.") else "sageattention-2.2.0+cu128torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl"
         release = "v2.2.0-windows.post4"
         return f"https://github.com/woct0rdho/SageAttention/releases/download/{release}/{wheel}"

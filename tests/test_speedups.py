@@ -15,6 +15,8 @@ from comfyui_app import installer
         (("2.8.0", 2, 8, "12.8"), "sageattention-2.2.0+cu128torch2.8.0.post3-cp39-abi3-win_amd64.whl"),
         (("2.9.0", 2, 9, "12.8"), "sageattention-2.2.0+cu128torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl"),
         (("2.9.0", 2, 9, "13.0"), "sageattention-2.2.0+cu130torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl"),
+        (("2.10.0", 2, 10, "12.8"), "sageattention-2.2.0+cu128torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl"),
+        (("2.10.0", 2, 10, "13.0"), "sageattention-2.2.0+cu130torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl"),
     ],
 )
 def test_sageattention_wheel_selector_matches_supported_torch_cuda_combinations(monkeypatch, torch_runtime, expected_suffix) -> None:
