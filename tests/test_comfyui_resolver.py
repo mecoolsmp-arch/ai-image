@@ -342,7 +342,7 @@ def test_build_depth_refcontrol_edit_prompt_uses_safetensors_loader_for_int8() -
     assert prompt["1"]["inputs"]["weight_dtype"] == "default"
 
 
-def test_build_depth_refcontrol_edit_prompt_adds_teacache_after_lora(monkeypatch) -> None:
+def test_build_depth_refcontrol_edit_prompt_skips_teacache_when_requested(monkeypatch) -> None:
     monkeypatch.setattr(workflow_builder, "_teacache_available", lambda: True)
 
     prompt = build_depth_refcontrol_edit_prompt(
@@ -358,9 +358,8 @@ def test_build_depth_refcontrol_edit_prompt_adds_teacache_after_lora(monkeypatch
         use_teacache=True,
     )
 
-    tea_node_id = next(node_id for node_id, node in prompt.items() if node["class_type"] == "TeaCache")
-    assert prompt[tea_node_id]["inputs"]["model"] == ["4", 0]
-    assert prompt["24"]["inputs"]["model"] == [tea_node_id, 0]
+    assert all(node["class_type"] != "TeaCache" for node in prompt.values())
+    assert prompt["24"]["inputs"]["model"] == ["4", 0]
 
 
 def test_resolve_depth_control_models_supports_int8_base(monkeypatch) -> None:

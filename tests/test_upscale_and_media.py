@@ -280,6 +280,64 @@ def test_run_depth_edit_uses_requested_base_variant(monkeypatch, tmp_path: Path)
     assert result.image_path.read_text(encoding="utf-8") == "final"
 
 
+def test_run_depth_edit_skips_teacache_but_reports_it(monkeypatch, tmp_path: Path) -> None:
+    from comfyui_app import generation
+
+    recorded: dict[str, object] = {}
+
+    class FakeImage:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def save(self, path: Path) -> None:
+            Path(path).write_text(self.name, encoding="utf-8")
+
+    class FakeClient:
+        client_id = "client"
+
+        def upload_image(self, path: Path) -> str:
+            return f"uploaded:{Path(path).name}"
+
+        def wait_until_up(self, timeout: float = 0.0) -> None:
+            return None
+
+        def queue_prompt(self, prompt_dict, client_id=None) -> str:
+            recorded["diffusion_model"] = prompt_dict["1"]["inputs"]["unet_name"]
+            return "prompt-id"
+
+        def wait_for_completion(self, prompt_id, client_id=None, timeout: float = 0.0) -> None:
+            return None
+
+        def get_images(self, prompt_id: str):
+            return [FakeImage("depth"), FakeImage("final")]
+
+    def fake_depth_assets() -> tuple[str, str]:
+        recorded["depth_assets_called"] = True
+        return ("base.safetensors", "lora.safetensors")
+
+    def fake_resolved_filename_map(vram_gb: float, prefer_gguf: bool, engine: str) -> dict[str, str]:
+        return {"diffusion": "diff.safetensors", "text_encoder": "text.safetensors", "vae": "vae.safetensors"}
+
+    def fake_build_depth_refcontrol_edit_prompt(**kwargs):
+        recorded["build_kwargs"] = kwargs
+        return {"1": {"inputs": {"unet_name": kwargs["diffusion_model"]}}}
+
+    monkeypatch.setattr(generation, "_depth_control_assets", fake_depth_assets)
+    monkeypatch.setattr(generation, "_resolved_filename_map", fake_resolved_filename_map)
+    monkeypatch.setattr(generation, "detect_vram", lambda: (8.0, "RTX", True))
+    monkeypatch.setattr(generation, "build_depth_refcontrol_edit_prompt", fake_build_depth_refcontrol_edit_prompt)
+
+    result = generation.run_depth_edit(tmp_path / "input.png", None, "prompt", "negative", tmp_path, use_teacache=True, client=FakeClient())
+    assert recorded["depth_assets_called"] is True
+    assert recorded["build_kwargs"]["use_teacache"] is False
+    assert recorded["diffusion_model"] == "base.safetensors"
+    assert result.status.startswith("Saved image to ")
+    assert "TeaCache skipped on depth path." in result.status
+    assert result.preview_path is not None
+    assert result.preview_path.read_text(encoding="utf-8") == "depth"
+    assert result.image_path.read_text(encoding="utf-8") == "final"
+
+
 def test_run_edit_forwards_teacache_flag(monkeypatch, tmp_path: Path) -> None:
     from types import SimpleNamespace
 

@@ -553,6 +553,7 @@ def run_depth_edit(
     client: ComfyClient | None = None,
 ) -> GenerationResult:
     client = client or ComfyClient(COMFYUI_HOST, COMFYUI_PORT)
+    requested_teacache = bool(use_teacache)
     depth_source_path = Path(image_path)
     reference_path = Path(reference_image_path) if reference_image_path is not None else depth_source_path
     target_dir = Path(output_dir)
@@ -575,7 +576,7 @@ def run_depth_edit(
         cfg=cfg,
         lora_strength=lora_strength,
         megapixels=megapixels,
-        use_teacache=use_teacache,
+        use_teacache=False,
     )
     output_name = _output_name(depth_source_path, "depth_edit", seed)
     client.wait_until_up(timeout=timeout)
@@ -591,9 +592,12 @@ def run_depth_edit(
     preview_image.save(depth_preview_path)
     final_path = target_dir / output_name
     final_image.save(final_path)
+    status = f"Saved image to {final_path}."
+    if requested_teacache:
+        status += " TeaCache skipped on depth path."
     return GenerationResult(
         image_path=final_path,
-        status=f"Saved image to {final_path}.",
+        status=status,
         prompt_id=prompt_id,
         preview_path=depth_preview_path,
     )
