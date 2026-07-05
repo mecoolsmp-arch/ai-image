@@ -438,6 +438,7 @@ def _batch_folder_stream(
     engine: str,
     use_torch_compile: bool,
     mrflow: bool,
+    use_teacache: bool,
     use_consistency_lora: bool,
     consistency_lora_strength: float,
 ):
@@ -463,6 +464,7 @@ def _batch_folder_stream(
             megapixels=float(megapixels),
             engine=engine,
             use_torch_compile=bool(use_torch_compile),
+            use_teacache=bool(use_teacache),
             use_consistency_lora=bool(use_consistency_lora),
             consistency_lora_name=None,
             consistency_lora_strength=float(consistency_lora_strength),
@@ -773,6 +775,10 @@ def build_app() -> "gr.Blocks":
                         label="torch.compile (requires Triton from experimental speedups; limited gain on Ampere; faster after warmup, slower first run, recompiles on resolution change)",
                         value=False,
                     )
+                    batch_teacache = gr.Checkbox(
+                        label="Experimental: TeaCache speedup (multi-step flows only)",
+                        value=False,
+                    )
                     batch_mrflow = gr.Checkbox(
                         label="MrFlow staged (experimental - faster; low-res generate + upscale + refine)",
                         value=False,
@@ -783,7 +789,7 @@ def build_app() -> "gr.Blocks":
                     batch_gallery = gr.Gallery(label="Results", columns=3, height=240)
             batch_evt = batch_button.click(
                 fn=_batch_folder_stream,
-                inputs=[batch_input, batch_output, batch_prompt, batch_negative, batch_steps, batch_cfg, batch_megapixels, batch_seed, batch_engine, batch_compile, batch_mrflow, batch_consistency, batch_consistency_strength],
+                inputs=[batch_input, batch_output, batch_prompt, batch_negative, batch_steps, batch_cfg, batch_megapixels, batch_seed, batch_engine, batch_compile, batch_mrflow, batch_teacache, batch_consistency, batch_consistency_strength],
                 outputs=[batch_status, batch_gallery],
             )
             batch_consistency.change(
