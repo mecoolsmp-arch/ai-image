@@ -278,3 +278,42 @@ def test_run_depth_edit_uses_requested_base_variant(monkeypatch, tmp_path: Path)
     assert result.preview_path is not None
     assert result.preview_path.read_text(encoding="utf-8") == "depth"
     assert result.image_path.read_text(encoding="utf-8") == "final"
+
+
+def test_run_edit_forwards_teacache_flag(monkeypatch, tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from comfyui_app import generation
+
+    recorded: dict[str, object] = {}
+
+    class FakeClient:
+        client_id = "client"
+
+        def upload_image(self, path: Path) -> str:
+            return f"uploaded:{Path(path).name}"
+
+        def wait_until_up(self, timeout: float = 0.0) -> None:
+            return None
+
+    def fake_resolved_filename_map(vram_gb: float, prefer_gguf: bool, engine: str) -> dict[str, str]:
+        return {"diffusion": "diff.safetensors", "text_encoder": "text.safetensors", "vae": "vae.safetensors", "upscale": "upscale.pth"}
+
+    def fake_build_edit_prompt(**kwargs):
+        recorded["build_kwargs"] = kwargs
+        return {"1": {"inputs": {"unet_name": kwargs["diffusion_model"]}}}
+
+    def fake_run_prompt(client, prompt_dict, output_dir, output_name, timeout, preview_callback=None):
+        recorded["prompt_dict"] = prompt_dict
+        return GenerationResult(image_path=tmp_path / "result.png", status="ok")
+
+    monkeypatch.setattr(generation, "_resolved_filename_map", fake_resolved_filename_map)
+    monkeypatch.setattr(generation, "detect_vram", lambda: (8.0, "RTX", True))
+    monkeypatch.setattr(generation, "select_tier", lambda vram_gb: SimpleNamespace(use_tiled_decode=True))
+    monkeypatch.setattr(generation, "build_edit_prompt", fake_build_edit_prompt)
+    monkeypatch.setattr(generation, "_run_prompt", fake_run_prompt)
+
+    result = generation.run_edit(tmp_path / "input.png", "prompt", "negative", tmp_path, use_teacache=True, client=FakeClient())
+
+    assert recorded["build_kwargs"]["use_teacache"] is True
+    assert result.status == "ok"

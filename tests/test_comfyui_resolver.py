@@ -148,6 +148,33 @@ def test_build_edit_prompt_keeps_base_model_without_consistency_lora() -> None:
     assert prompt["16"]["inputs"]["model"] == ["1", 0]
 
 
+def test_build_edit_prompt_adds_teacache_node_when_available(monkeypatch) -> None:
+    monkeypatch.setattr(workflow_builder, "_teacache_available", lambda: True)
+
+    prompt = build_edit_prompt(
+        diffusion_model="flux-2-klein-4b_learned_int8mixed_tensorwise.safetensors",
+        text_encoder_model="qwen_3_4b_fp4_flux2.safetensors",
+        vae_model="flux2-vae.safetensors",
+        prompt="make this photo realistic",
+        negative="blurry, cartoon",
+        seed=123,
+        steps=4,
+        cfg=1.0,
+        megapixels=1.0,
+        input_image_name="input.png",
+        batch_size=1,
+        use_tiled_decode=True,
+        decode_tile_size=1024,
+        use_teacache=True,
+    )
+
+    tea_node_id = next(node_id for node_id, node in prompt.items() if node["class_type"] == "TeaCache")
+    assert prompt[tea_node_id]["inputs"]["model"] == ["1", 0]
+    assert prompt[tea_node_id]["inputs"]["model_type"] == "flux"
+    assert {"model", "model_type", "rel_l1_thresh", "start_percent", "end_percent", "cache_device"} <= set(prompt[tea_node_id]["inputs"])
+    assert prompt["16"]["inputs"]["model"] == [tea_node_id, 0]
+
+
 def test_build_edit_prompt_uses_nunchaku_loader_for_experimental_engine() -> None:
     prompt = build_edit_prompt(
         diffusion_model="svdq-int4_r32-FLUX.2-klein-4B-Nunchaku.safetensors",

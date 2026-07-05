@@ -225,6 +225,7 @@ def run_edit(
     prefer_gguf: bool = False,
     engine: str = "int8",
     use_torch_compile: bool = False,
+    use_teacache: bool = False,
     use_consistency_lora: bool = False,
     consistency_lora_name: str | None = None,
     consistency_lora_strength: float = 1.0,
@@ -271,6 +272,7 @@ def run_edit(
             batch_size=batch_size,
             use_tiled_decode=tier.use_tiled_decode if use_tiled_decode is None else use_tiled_decode,
             decode_tile_size=decode_tile_size,
+            use_teacache=use_teacache,
             engine=engine,
             use_torch_compile=use_torch_compile,
         )
@@ -289,6 +291,7 @@ def run_edit(
             batch_size=batch_size,
             use_tiled_decode=tier.use_tiled_decode if use_tiled_decode is None else use_tiled_decode,
             decode_tile_size=decode_tile_size,
+            use_teacache=use_teacache,
             engine=engine,
             use_torch_compile=use_torch_compile,
             consistency_lora_name=effective_consistency_lora,
@@ -316,6 +319,7 @@ def run_edit(
                 "batch_size": batch_size,
                 "use_tiled_decode": tier.use_tiled_decode if use_tiled_decode is None else use_tiled_decode,
                 "decode_tile_size": decode_tile_size,
+                "use_teacache": use_teacache,
                 "engine": engine,
                 "use_torch_compile": use_torch_compile,
             }

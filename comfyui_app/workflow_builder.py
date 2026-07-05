@@ -127,6 +127,7 @@ def build_edit_prompt(
     batch_size: int,
     use_tiled_decode: bool,
     decode_tile_size: int,
+    use_teacache: bool = False,
     consistency_lora_name: str | None = None,
     consistency_lora_strength: float = CONSISTENCY_LORA_STRENGTH_DEFAULT,
     engine: str = "default",
@@ -170,6 +171,9 @@ def build_edit_prompt(
     nodes["19"] = _node("SaveImage", images=_link(decode_id), filename_prefix="Flux2-Klein")
     if consistency_lora_name:
         model_link = _apply_consistency_lora(nodes, _link("1"), consistency_lora_name, consistency_lora_strength)
+        nodes["16"]["inputs"]["model"] = model_link
+    if use_teacache:
+        model_link = _apply_teacache(nodes, model_link)
         nodes["16"]["inputs"]["model"] = model_link
     if use_torch_compile:
         _apply_torch_compile(nodes, model_link)
