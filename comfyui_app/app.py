@@ -856,7 +856,7 @@ def build_app() -> "gr.Blocks":
                 browse_button.click(fn=_browse_and_store, inputs=[textbox, ui_state], outputs=[textbox, ui_state])
             return textbox, browse_button
 
-        with gr.Tab("Image Edit"):
+        with gr.Tab("Image Edit") as edit_tab:
             with gr.Row():
                 with gr.Column():
                     edit_image = gr.Image(label="Input image", type="filepath")
@@ -932,7 +932,7 @@ def build_app() -> "gr.Blocks":
             )
             edit_stop.click(fn=_stop_current_job, outputs=edit_status, cancels=[edit_run])
 
-        with gr.Tab("Video to Frames"):
+        with gr.Tab("Video to Frames") as video_tab:
             frame_state = gr.State("")
             with gr.Row():
                 with gr.Column():
@@ -973,7 +973,7 @@ def build_app() -> "gr.Blocks":
             )
             edit_frames_stop.click(fn=_stop_current_job, outputs=frame_status, cancels=[edit_frames_evt])
 
-        with gr.Tab("Batch Folder"):
+        with gr.Tab("Batch Folder") as batch_tab:
             with gr.Row():
                 with gr.Column():
                     batch_input, _ = directory_field("Input folder", str(DEFAULT_OUTPUT_DIR), state_key="batch_input")
@@ -1027,7 +1027,7 @@ def build_app() -> "gr.Blocks":
             )
             batch_stop.click(fn=_stop_current_job, outputs=batch_status, cancels=[batch_evt])
 
-        with gr.Tab("Text-to-Image"):
+        with gr.Tab("Text-to-Image") as t2i_tab:
             with gr.Row():
                 with gr.Column():
                     t2i_prompt = gr.Textbox(label="Prompt", lines=4)
@@ -1202,29 +1202,48 @@ def build_app() -> "gr.Blocks":
             component.change(fn=persist, inputs=[ui_state, component], outputs=[ui_state])
 
         def bind_shared_text(*components) -> None:
-            outputs = [*components, ui_state]
+            def make_sync(source_index: int):
+                targets = [component for index, component in enumerate(components) if index != source_index]
 
-            def sync(state, value):
-                text = value or ""
-                updated = _ui_state_update(state, "shared_prompt", text)
-                return (*([text] * len(components)), updated)
+                def sync(state, value):
+                    text = value or ""
+                    updated = _ui_state_update(state, "shared_prompt", text)
+                    return (*([text] * len(targets)), updated)
 
-            for component in components:
-                component.input(fn=sync, inputs=[ui_state, component], outputs=outputs)
+                return sync, targets + [ui_state]
+
+            for source_index, component in enumerate(components):
+                sync, outputs = make_sync(source_index)
+                component.blur(fn=sync, inputs=[ui_state, component], outputs=outputs)
 
         def bind_shared_negative(*components) -> None:
-            outputs = [*components, ui_state]
+            def make_sync(source_index: int):
+                targets = [component for index, component in enumerate(components) if index != source_index]
 
-            def sync(state, value):
-                text = value or ""
-                updated = _ui_state_update(state, "shared_negative", text)
-                return (*([text] * len(components)), updated)
+                def sync(state, value):
+                    text = value or ""
+                    updated = _ui_state_update(state, "shared_negative", text)
+                    return (*([text] * len(targets)), updated)
 
-            for component in components:
-                component.input(fn=sync, inputs=[ui_state, component], outputs=outputs)
+                return sync, targets + [ui_state]
+
+            for source_index, component in enumerate(components):
+                sync, outputs = make_sync(source_index)
+                component.blur(fn=sync, inputs=[ui_state, component], outputs=outputs)
+
+        def bind_shared_tab(tab, prompt_component, negative_component) -> None:
+            tab.select(
+                fn=lambda state: (state["shared_prompt"], state["shared_negative"]),
+                inputs=[ui_state],
+                outputs=[prompt_component, negative_component],
+            )
 
         bind_shared_text(edit_prompt, batch_prompt, t2i_prompt, video_prompt)
         bind_shared_negative(edit_negative, batch_negative, t2i_negative, video_negative)
+        bind_shared_tab(edit_tab, edit_prompt, edit_negative)
+        bind_shared_tab(batch_tab, batch_prompt, batch_negative)
+        bind_shared_tab(t2i_tab, t2i_prompt, t2i_negative)
+        bind_shared_tab(video_tab, video_prompt, video_negative)
         bind_path(edit_image, "edit_image")
         bind_path(edit_reference, "edit_reference")
         bind_textbox(frame_dir, "video_frame_dir")

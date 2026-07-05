@@ -242,6 +242,33 @@ def test_app_configures_browser_state_for_persistence() -> None:
     assert props["default_value"]["shared_negative"] == ""
 
 
+def test_shared_prompt_wiring_uses_blur_and_tab_select() -> None:
+    demo = app.build_app()
+    components = [component for component in demo.config["components"] if isinstance(component, dict)]
+    dependencies = demo.config["dependencies"]
+
+    prompt_ids = [component["id"] for component in components if component.get("type") == "textbox" and component.get("props", {}).get("label") == "Prompt"]
+    negative_ids = [component["id"] for component in components if component.get("type") == "textbox" and component.get("props", {}).get("label") == "Negative prompt"]
+    tab_ids = [component["id"] for component in components if component.get("type") == "tabitem"][:4]
+
+    assert len(prompt_ids) == 4
+    assert len(negative_ids) == 4
+    assert len(tab_ids) == 4
+
+    for textbox_id in prompt_ids + negative_ids:
+        assert any(dep["targets"] == [(textbox_id, "blur")] for dep in dependencies)
+        assert not any(dep["targets"] == [(textbox_id, "input")] for dep in dependencies)
+
+    expected_outputs = [
+        [prompt_ids[0], negative_ids[0]],
+        [prompt_ids[1], negative_ids[1]],
+        [prompt_ids[2], negative_ids[2]],
+        [prompt_ids[3], negative_ids[3]],
+    ]
+    for tab_id, outputs in zip(tab_ids, expected_outputs, strict=True):
+        assert any(dep["targets"] == [(tab_id, "select")] and dep["outputs"] == outputs for dep in dependencies)
+
+
 def test_restore_ui_state_shares_prompts_and_skips_missing_files(tmp_path: Path) -> None:
     def update(*, value=None, visible=None):
         data = {"__type__": "update"}
