@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from comfyui_app import installer
@@ -28,3 +30,45 @@ def test_sageattention_wheel_selector_falls_back_when_no_match(monkeypatch) -> N
     monkeypatch.setattr(installer, "_torch_runtime", lambda: ("2.5.1", 2, 5, "12.4"))
 
     assert installer._sageattention_wheel_url() is None
+
+
+def test_patch_teacache_lightricks_import_rewrites_and_is_idempotent(tmp_path: Path) -> None:
+    nodes_py = tmp_path / "nodes.py"
+    original_text = (
+        "from comfy.ldm.lightricks.model import precompute_freqs_cis\n"
+        "print('tea')\n"
+    )
+    nodes_py.write_text(original_text, encoding="utf-8")
+
+    patched = installer._patch_teacache_lightricks_import(nodes_py)
+    first_pass = nodes_py.read_text(encoding="utf-8")
+    second = installer._patch_teacache_lightricks_import(nodes_py)
+    second_pass = nodes_py.read_text(encoding="utf-8")
+
+    expected_block = (
+        "try:\n"
+        "    from comfy.ldm.lightricks.model import precompute_freqs_cis\n"
+        "except ImportError:\n"
+        "    try:\n"
+        "        from comfy.ldm.lightricks.model import LTXBaseModel\n"
+        "        precompute_freqs_cis = LTXBaseModel.precompute_freqs_cis\n"
+        "    except (ImportError, AttributeError):\n"
+        "        def precompute_freqs_cis(*args, **kwargs):\n"
+        "            raise RuntimeError(\"TeaCache LTX-Video support needs precompute_freqs_cis, which is unavailable in this ComfyUI version.\")\n"
+    )
+
+    assert patched is True
+    assert expected_block in first_pass
+    assert second is False
+    assert second_pass == first_pass
+
+
+def test_patch_teacache_lightricks_import_leaves_unmatched_content_unchanged(tmp_path: Path) -> None:
+    nodes_py = tmp_path / "nodes.py"
+    original_text = "print('no lightricks import here')\n"
+    nodes_py.write_text(original_text, encoding="utf-8")
+
+    patched = installer._patch_teacache_lightricks_import(nodes_py)
+
+    assert patched is False
+    assert nodes_py.read_text(encoding="utf-8") == original_text

@@ -195,12 +195,6 @@ def test_app_default_engine_is_int8() -> None:
     assert app.ENGINE_CHOICES[0] == ("INT8 (fastest on Ampere - default)", "int8")
 
 
-def test_app_prefers_installed_consistency_lora_filename(monkeypatch) -> None:
-    monkeypatch.setattr(app, "_available_loras", lambda: ["f2k_4B_consist_20260314.safetensors"])
-
-    assert app._default_consistency_lora_value() == "f2k_4B_consist_20260314.safetensors"
-
-
 def test_app_exposes_model_cleanup_controls() -> None:
     demo = app.build_app()
     button_values = [

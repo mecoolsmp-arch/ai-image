@@ -101,7 +101,39 @@ def _install_teacache_support() -> None:
     print("Trying to install the ComfyUI-TeaCache custom node...")
     custom_nodes = COMFYUI_DIR / "custom_nodes"
     custom_nodes.mkdir(parents=True, exist_ok=True)
-    _install_custom_node("https://github.com/welltop-cn/ComfyUI-TeaCache.git", custom_nodes / "ComfyUI-TeaCache")
+    target_dir = custom_nodes / "ComfyUI-TeaCache"
+    _install_custom_node("https://github.com/welltop-cn/ComfyUI-TeaCache.git", target_dir)
+    try:
+        patched = _patch_teacache_lightricks_import(target_dir / "nodes.py")
+        if patched:
+            print("Patched TeaCache to tolerate current ComfyUI Lightricks imports.")
+    except Exception as exc:
+        print(f"WARNING: The TeaCache Lightricks import patch could not be applied: {exc}")
+        print("TeaCache will keep working for Flux paths if the module still imports.")
+
+
+def _patch_teacache_lightricks_import(nodes_py: Path) -> bool:
+    if not nodes_py.exists():
+        return False
+    original = "from comfy.ldm.lightricks.model import precompute_freqs_cis"
+    patched = (
+        "try:\n"
+        "    from comfy.ldm.lightricks.model import precompute_freqs_cis\n"
+        "except ImportError:\n"
+        "    try:\n"
+        "        from comfy.ldm.lightricks.model import LTXBaseModel\n"
+        "        precompute_freqs_cis = LTXBaseModel.precompute_freqs_cis\n"
+        "    except (ImportError, AttributeError):\n"
+        "        def precompute_freqs_cis(*args, **kwargs):\n"
+        "            raise RuntimeError(\"TeaCache LTX-Video support needs precompute_freqs_cis, which is unavailable in this ComfyUI version.\")\n"
+    )
+    text = nodes_py.read_text(encoding="utf-8")
+    if patched in text:
+        return False
+    if original not in text:
+        return False
+    nodes_py.write_text(text.replace(original, patched, 1), encoding="utf-8")
+    return True
 
 
 def _load_env_lines(path: Path) -> dict[str, str]:
