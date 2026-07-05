@@ -18,6 +18,7 @@ from comfyui_app.model_resolver import (
     ModelResolverError,
     download_models,
     load_resolved_manifest,
+    resolve_consistency_lora_models,
     resolve_depth_control_models,
     resolve_models,
 )
@@ -147,6 +148,45 @@ def _depth_control_assets() -> tuple[str, str]:
     return base_name, lora_name
 
 
+def _consistency_lora_asset() -> str:
+    manifest = load_resolved_manifest()
+    if not isinstance(manifest, dict):
+        manifest = {}
+    models = manifest.get("models")
+    if not isinstance(models, dict):
+        models = {}
+    consistency = models.get("consistency_lora")
+    if not isinstance(consistency, dict):
+        token = get_hf_token()
+        if not token:
+            raise ModelResolverError(
+                "Consistency LoRA is not installed. Re-run Install.bat with --with-consistency-lora."
+            )
+        resolved = resolve_consistency_lora_models(token)
+        download_models(resolved, token, engine="int8")
+        manifest = load_resolved_manifest()
+        if not isinstance(manifest, dict):
+            raise ModelResolverError(
+                "Consistency LoRA is not installed. Re-run Install.bat with --with-consistency-lora."
+            )
+        models = manifest.get("models")
+        if not isinstance(models, dict):
+            raise ModelResolverError(
+                "Consistency LoRA is not installed. Re-run Install.bat with --with-consistency-lora."
+            )
+        consistency = models.get("consistency_lora")
+        if not isinstance(consistency, dict):
+            raise ModelResolverError(
+                "Consistency LoRA is not installed. Re-run Install.bat with --with-consistency-lora."
+            )
+    consistency_name = str(consistency.get("local_filename") or "")
+    if not consistency_name:
+        raise ModelResolverError(
+            "Consistency LoRA is not installed. Re-run Install.bat with --with-consistency-lora."
+        )
+    return consistency_name
+
+
 def _resolved_filename_map(vram_gb: float, prefer_gguf: bool, engine: str) -> dict[str, str]:
     resolved = _manifest_models(vram_gb, get_hf_token(), prefer_gguf=prefer_gguf, engine=engine)
     return {name: str(info["local_filename"]) for name, info in resolved.items()}
@@ -185,6 +225,9 @@ def run_edit(
     prefer_gguf: bool = False,
     engine: str = "int8",
     use_torch_compile: bool = False,
+    use_consistency_lora: bool = False,
+    consistency_lora_name: str | None = None,
+    consistency_lora_strength: float = 1.0,
     mrflow: bool = False,
     mrflow_low_width: int = 512,
     mrflow_low_height: int = 512,
@@ -202,6 +245,9 @@ def run_edit(
     tier = select_tier(vram_gb)
     filenames = _resolved_filename_map(vram_gb, prefer_gguf, engine)
     uploaded_name = client.upload_image(input_path)
+    effective_consistency_lora = None
+    if use_consistency_lora and not mrflow:
+        effective_consistency_lora = consistency_lora_name or _consistency_lora_asset()
     if mrflow:
         prompt_dict = build_mrflow_edit_prompt(
             diffusion_model=filenames["diffusion"],
@@ -245,6 +291,8 @@ def run_edit(
             decode_tile_size=decode_tile_size,
             engine=engine,
             use_torch_compile=use_torch_compile,
+            consistency_lora_name=effective_consistency_lora,
+            consistency_lora_strength=consistency_lora_strength,
         )
     output_name = _output_name(input_path, "edit", seed)
     try:
@@ -271,6 +319,13 @@ def run_edit(
                 "engine": engine,
                 "use_torch_compile": use_torch_compile,
             }
+            if not mrflow:
+                builder_kwargs.update(
+                    {
+                        "consistency_lora_name": effective_consistency_lora,
+                        "consistency_lora_strength": consistency_lora_strength,
+                    }
+                )
             if mrflow:
                 builder_kwargs.update(
                     {
@@ -307,6 +362,9 @@ def run_t2i(
     use_teacache: bool = False,
     engine: str = "int8",
     use_torch_compile: bool = False,
+    use_consistency_lora: bool = False,
+    consistency_lora_name: str | None = None,
+    consistency_lora_strength: float = 1.0,
     mrflow: bool = False,
     mrflow_low_width: int = 512,
     mrflow_low_height: int = 512,
@@ -322,6 +380,9 @@ def run_t2i(
     vram_gb, _, _ = detect_vram()
     tier = select_tier(vram_gb)
     filenames = _resolved_filename_map(vram_gb, prefer_gguf, engine)
+    effective_consistency_lora = None
+    if use_consistency_lora and not mrflow:
+        effective_consistency_lora = consistency_lora_name or _consistency_lora_asset()
     if mrflow:
         prompt_dict = build_mrflow_t2i_prompt(
             diffusion_model=filenames["diffusion"],
@@ -364,6 +425,8 @@ def run_t2i(
             decode_tile_size=decode_tile_size,
             engine=engine,
             use_torch_compile=use_torch_compile,
+            consistency_lora_name=effective_consistency_lora,
+            consistency_lora_strength=consistency_lora_strength,
         )
     output_name = _output_name(None, "t2i", seed)
     try:
@@ -391,6 +454,13 @@ def run_t2i(
                 "engine": engine,
                 "use_torch_compile": use_torch_compile,
             }
+            if not mrflow:
+                builder_kwargs.update(
+                    {
+                        "consistency_lora_name": effective_consistency_lora,
+                        "consistency_lora_strength": consistency_lora_strength,
+                    }
+                )
             if mrflow:
                 builder_kwargs.update(
                     {

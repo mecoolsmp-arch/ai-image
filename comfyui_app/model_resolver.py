@@ -115,6 +115,17 @@ MODEL_REGISTRY: dict[str, dict[str, list[Candidate]]] = {
             )
         ],
     },
+    "consistency_lora": {
+        "f2k_4b": [
+            Candidate(
+                repo="lrzjason/Consistance_Edit_Lora",
+                path_regex=r"(^|/)f2k_4B_consist_20260314\.safetensors$",
+                dest_subdir="loras",
+                min_vram=0.0,
+                kind="f2k_4B_consist_20260314.safetensors",
+            )
+        ],
+    },
     "text_encoder": {
         "flux2_fp4": [
             Candidate(
@@ -277,6 +288,16 @@ def resolve_depth_control_models(token: str | None) -> dict[str, dict[str, objec
     return {
         "depth_control_base_int8": _select_candidate_for_key("depth_control", "base_int8", token),
         "depth_control_lora": _select_candidate_for_key("depth_control", "refcontrol_depth_lora", token),
+    }
+
+
+def resolve_consistency_lora_models(token: str | None) -> dict[str, dict[str, object]]:
+    if not token:
+        raise ModelResolverError(
+            "A Hugging Face token is required to download the consistency LoRA model. Run setup and paste your token first."
+        )
+    return {
+        "consistency_lora": _select_candidate_for_key("consistency_lora", "f2k_4b", token),
     }
 
 

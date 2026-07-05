@@ -9,7 +9,13 @@ import sys
 from pathlib import Path
 
 from comfyui_app.config import COMFYUI_DIR, DOTENV_PATH, REPO_ROOT, get_hf_token
-from comfyui_app.model_resolver import ModelResolverError, download_models, resolve_depth_control_models, resolve_models
+from comfyui_app.model_resolver import (
+    ModelResolverError,
+    download_models,
+    resolve_consistency_lora_models,
+    resolve_depth_control_models,
+    resolve_models,
+)
 from comfyui_app.vram import detect_vram, select_tier
 
 logger = logging.getLogger(__name__)
@@ -238,6 +244,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Also install the optional FLUX.2 depth pose/shape lock assets.",
     )
     parser.add_argument(
+        "--with-consistency-lora",
+        action="store_true",
+        help="Also download the optional FLUX.2 Klein consistency LoRA asset.",
+    )
+    parser.add_argument(
         "--install-sageattention",
         action="store_true",
         help="Install SageAttention in the active venv and exit.",
@@ -272,6 +283,10 @@ def main(argv: list[str] | None = None) -> int:
             depth_resolved = resolve_depth_control_models(token)
             download_models(depth_resolved, token, progress_cb=print)
             _install_depth_control_support()
+        if args.with_consistency_lora:
+            token = _get_token_from_user()
+            consistency_resolved = resolve_consistency_lora_models(token)
+            download_models(consistency_resolved, token, progress_cb=print)
     except ModelResolverError as exc:
         print(exc.message)
         return 2

@@ -29,6 +29,7 @@ IMAGE_UPSCALE_WITH_MODEL_CLASS = "ImageUpscaleWithModel"
 SPLIT_SIGMAS_DENOISE_CLASS = "SplitSigmasDenoise"
 RTX_VIDEO_SUPER_RESOLUTION_CLASS = "RTXVideoSuperResolution"
 DEFAULT_UPSCALE_MODEL = "RealESRGAN_x2plus.pth"
+CONSISTENCY_LORA_STRENGTH_DEFAULT = 1.0
 
 
 def _node(class_type: str, **inputs: Any) -> dict[str, Any]:
@@ -67,6 +68,12 @@ def _apply_teacache(nodes: dict[str, Any], source_model_link: list[Any], *, mode
         if isinstance(node, dict) and node.get("class_type") == "CFGGuider":
             node["inputs"]["model"] = tea_link
     return tea_link
+
+
+def _apply_consistency_lora(nodes: dict[str, Any], base_model_link: list[Any], lora_name: str, strength: float) -> list[Any]:
+    node_id = str(max(int(n) for n in nodes.keys() if n.isdigit()) + 1)
+    nodes[node_id] = _node(LORA_LOADER_MODEL_ONLY_CLASS, model=base_model_link, lora_name=lora_name, strength_model=strength)
+    return _link(node_id)
 
 
 def _diffusion_loader_node(diffusion_model: str, engine: str) -> dict[str, Any]:
@@ -120,6 +127,8 @@ def build_edit_prompt(
     batch_size: int,
     use_tiled_decode: bool,
     decode_tile_size: int,
+    consistency_lora_name: str | None = None,
+    consistency_lora_strength: float = CONSISTENCY_LORA_STRENGTH_DEFAULT,
     engine: str = "default",
     use_torch_compile: bool = False,
 ) -> dict[str, Any]:
@@ -159,6 +168,9 @@ def build_edit_prompt(
     decode_id, decode_node = _decode_node(use_tiled_decode, decode_tile_size)
     nodes[decode_id] = decode_node
     nodes["19"] = _node("SaveImage", images=_link(decode_id), filename_prefix="Flux2-Klein")
+    if consistency_lora_name:
+        model_link = _apply_consistency_lora(nodes, _link("1"), consistency_lora_name, consistency_lora_strength)
+        nodes["16"]["inputs"]["model"] = model_link
     if use_torch_compile:
         _apply_torch_compile(nodes, model_link)
     return nodes
@@ -180,6 +192,8 @@ def build_t2i_prompt(
     use_tiled_decode: bool,
     decode_tile_size: int,
     use_teacache: bool = False,
+    consistency_lora_name: str | None = None,
+    consistency_lora_strength: float = CONSISTENCY_LORA_STRENGTH_DEFAULT,
     engine: str = "default",
     use_torch_compile: bool = False,
 ) -> dict[str, Any]:
@@ -207,6 +221,9 @@ def build_t2i_prompt(
     decode_id, decode_node = _decode_node(use_tiled_decode, decode_tile_size)
     nodes[decode_id] = decode_node
     nodes["12"] = _node("SaveImage", images=_link(decode_id), filename_prefix="Flux2-Klein")
+    if consistency_lora_name:
+        model_link = _apply_consistency_lora(nodes, _link("1"), consistency_lora_name, consistency_lora_strength)
+        nodes["10"]["inputs"]["model"] = model_link
     if use_teacache:
         model_link = _apply_teacache(nodes, model_link)
         nodes["10"]["inputs"]["model"] = model_link

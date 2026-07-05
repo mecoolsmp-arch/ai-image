@@ -30,7 +30,7 @@ except Exception:  # pragma: no cover - optional dependency
 
 from comfyui_app.batch import CANCEL_EVENT, clear_cancel, iter_process_folder, process_folder, request_cancel
 from comfyui_app.comfy_client import ComfyClient
-from comfyui_app.config import COMFYUI_HOST, COMFYUI_PORT, DEFAULT_OUTPUT_DIR
+from comfyui_app.config import COMFYUI_HOST, COMFYUI_PORT, DEFAULT_OUTPUT_DIR, MODELS_DIR
 from comfyui_app.generation import GenerationResult, run_depth_edit, run_edit, run_t2i, run_upscale
 from comfyui_app.model_manager import delete_models as delete_installed_models
 from comfyui_app.model_manager import find_removable_models, list_installed_models, remove_unused_models
@@ -52,6 +52,7 @@ UPSCALER_CHOICES = [
 QUALITY_CHOICES = [("LOW", "LOW"), ("MEDIUM", "MEDIUM"), ("HIGH", "HIGH"), ("ULTRA", "ULTRA")]
 VIDEO_EXTS = [".mp4", ".mov"]
 DEFAULT_ENGINE_VALUE = "int8"
+CONSISTENCY_LORA_FILENAME = "f2k_4B_consist_20260314.safetensors"
 
 
 def _friendly_error(exc: Exception) -> str:
@@ -106,6 +107,18 @@ def _status_markdown() -> str:
             filename = entry.get("local_filename", "")
             lines.append(f"- {key}: `{filename}`")
     return "\n".join(lines)
+
+
+def _available_loras() -> list[str]:
+    loras_dir = MODELS_DIR / "loras"
+    if not loras_dir.exists():
+        return []
+    return sorted(p.name for p in loras_dir.glob("*.safetensors"))
+
+
+def _default_consistency_lora_value() -> str | None:
+    available = _available_loras()
+    return CONSISTENCY_LORA_FILENAME if CONSISTENCY_LORA_FILENAME in available else None
 
 
 def refresh_status() -> str:
@@ -215,6 +228,9 @@ def _edit_handler(
     use_teacache: bool,
     depth_lock: bool,
     live_preview: bool,
+    consistency: bool = False,
+    consistency_lora: object = None,
+    consistency_strength: float = 1.0,
 ) -> object:
     try:
         input_path = _component_path(input_image)
@@ -232,6 +248,7 @@ def _edit_handler(
             )
             yield str(result.image_path), None, _as_gr_image(result.preview_path), result.status
             return
+        lora_name = str(consistency_lora) if consistency_lora else None
         if not live_preview or bool(mrflow):
             result = run_edit(
                 input_path,
@@ -244,6 +261,9 @@ def _edit_handler(
                 megapixels=float(megapixels),
                 engine=engine,
                 use_torch_compile=bool(use_torch_compile),
+                use_consistency_lora=bool(consistency),
+                consistency_lora_name=lora_name,
+                consistency_lora_strength=float(consistency_strength),
                 mrflow=bool(mrflow),
             )
             yield str(result.image_path), None, None, result.status
@@ -269,6 +289,9 @@ def _edit_handler(
                     megapixels=float(megapixels),
                     engine=engine,
                     use_torch_compile=bool(use_torch_compile),
+                    use_consistency_lora=bool(consistency),
+                    consistency_lora_name=lora_name,
+                    consistency_lora_strength=float(consistency_strength),
                     mrflow=bool(mrflow),
                     preview_callback=preview_callback,
                 )
@@ -291,7 +314,7 @@ def _edit_handler(
             yield None, None, None, _friendly_error(state["exc"])  # type: ignore[arg-type]
             return
         result = state["result"]  # type: ignore[assignment]
-        yield str(result.image_path), last_preview, None, result.status
+        yield str(result.image_path), str(result.image_path), None, result.status
     except Exception as exc:
         yield None, None, None, _friendly_error(exc)
 
@@ -310,8 +333,12 @@ def _t2i_handler(
     mrflow: bool,
     use_teacache: bool,
     live_preview: bool,
+    consistency: bool = False,
+    consistency_lora: object = None,
+    consistency_strength: float = 1.0,
 ) -> object:
     try:
+        lora_name = str(consistency_lora) if consistency_lora else None
         if not live_preview:
             result = run_t2i(
                 prompt=prompt,
@@ -325,6 +352,9 @@ def _t2i_handler(
                 engine=engine,
                 use_teacache=bool(use_teacache),
                 use_torch_compile=bool(use_torch_compile),
+                use_consistency_lora=bool(consistency),
+                consistency_lora_name=lora_name,
+                consistency_lora_strength=float(consistency_strength),
                 mrflow=bool(mrflow),
             )
             yield str(result.image_path), None, result.status
@@ -351,6 +381,9 @@ def _t2i_handler(
                     engine=engine,
                     use_teacache=bool(use_teacache),
                     use_torch_compile=bool(use_torch_compile),
+                    use_consistency_lora=bool(consistency),
+                    consistency_lora_name=lora_name,
+                    consistency_lora_strength=float(consistency_strength),
                     mrflow=bool(mrflow),
                     preview_callback=preview_callback,
                 )
@@ -373,7 +406,7 @@ def _t2i_handler(
             yield None, None, _friendly_error(state["exc"])  # type: ignore[arg-type]
             return
         result = state["result"]  # type: ignore[assignment]
-        yield str(result.image_path), last_preview, result.status
+        yield str(result.image_path), str(result.image_path), result.status
     except Exception as exc:
         yield None, None, _friendly_error(exc)
 
@@ -422,6 +455,9 @@ def _batch_folder_stream(
     engine: str,
     use_torch_compile: bool,
     mrflow: bool,
+    use_consistency_lora: bool,
+    consistency_lora: object,
+    consistency_lora_strength: float,
 ):
     client = ComfyClient(COMFYUI_HOST, COMFYUI_PORT)
     client_ready = False
@@ -445,6 +481,9 @@ def _batch_folder_stream(
             megapixels=float(megapixels),
             engine=engine,
             use_torch_compile=bool(use_torch_compile),
+            use_consistency_lora=bool(use_consistency_lora),
+            consistency_lora_name=str(consistency_lora) if consistency_lora else None,
+            consistency_lora_strength=float(consistency_lora_strength),
             mrflow=bool(mrflow),
             client=client,
         )
@@ -626,6 +665,21 @@ def build_app() -> "gr.Blocks":
                     edit_engine = gr.Dropdown(label="Engine", choices=ENGINE_CHOICES, value=DEFAULT_ENGINE_VALUE)
                     edit_live_preview = gr.Checkbox(label="Show live preview", value=False)
                     edit_live_preview_image = gr.Image(label="Live preview", visible=False)
+                    edit_consistency = gr.Checkbox(label="Consistency LoRA (INT8 FLUX.2 Klein 4B)", value=False)
+                    edit_consistency_lora = gr.Dropdown(
+                        label="Consistency LoRA file",
+                        choices=_available_loras(),
+                        value=_default_consistency_lora_value(),
+                        visible=False,
+                    )
+                    edit_consistency_strength = gr.Slider(
+                        label="Consistency LoRA strength",
+                        minimum=0.0,
+                        maximum=2.0,
+                        step=0.05,
+                        value=1.0,
+                        visible=False,
+                    )
                     edit_compile = gr.Checkbox(
                         label="torch.compile (requires Triton from experimental speedups; limited gain on Ampere; faster after warmup, slower first run, recompiles on resolution change)",
                         value=False,
@@ -648,7 +702,7 @@ def build_app() -> "gr.Blocks":
                     edit_status = gr.Textbox(label="Status")
             edit_run = edit_button.click(
                 fn=_edit_handler,
-                inputs=[edit_image, edit_reference, edit_prompt, edit_negative, edit_output, edit_steps, edit_cfg, edit_megapixels, edit_seed, edit_engine, edit_compile, edit_mrflow, edit_teacache, edit_depth_lock, edit_live_preview],
+                inputs=[edit_image, edit_reference, edit_prompt, edit_negative, edit_output, edit_steps, edit_cfg, edit_megapixels, edit_seed, edit_engine, edit_compile, edit_mrflow, edit_teacache, edit_depth_lock, edit_live_preview, edit_consistency, edit_consistency_lora, edit_consistency_strength],
                 outputs=[edit_result, edit_live_preview_image, edit_depth_preview, edit_status],
             )
             edit_depth_lock.change(
@@ -660,6 +714,11 @@ def build_app() -> "gr.Blocks":
                 fn=lambda enabled: gr.update(visible=bool(enabled)),
                 inputs=[edit_live_preview],
                 outputs=[edit_live_preview_image],
+            )
+            edit_consistency.change(
+                fn=lambda enabled: (gr.update(visible=bool(enabled)), gr.update(visible=bool(enabled))),
+                inputs=[edit_consistency],
+                outputs=[edit_consistency_lora, edit_consistency_strength],
             )
             edit_stop.click(fn=_stop_current_job, outputs=edit_status, cancels=[edit_run])
 
@@ -717,6 +776,21 @@ def build_app() -> "gr.Blocks":
                     batch_megapixels = gr.Number(label="Megapixels", value=1.0)
                     batch_seed = gr.Number(label="Seed", value=0, precision=0)
                     batch_engine = gr.Dropdown(label="Engine", choices=ENGINE_CHOICES, value=DEFAULT_ENGINE_VALUE)
+                    batch_consistency = gr.Checkbox(label="Consistency LoRA (INT8 FLUX.2 Klein 4B)", value=False)
+                    batch_consistency_lora = gr.Dropdown(
+                        label="Consistency LoRA file",
+                        choices=_available_loras(),
+                        value=_default_consistency_lora_value(),
+                        visible=False,
+                    )
+                    batch_consistency_strength = gr.Slider(
+                        label="Consistency LoRA strength",
+                        minimum=0.0,
+                        maximum=2.0,
+                        step=0.05,
+                        value=1.0,
+                        visible=False,
+                    )
                     batch_compile = gr.Checkbox(
                         label="torch.compile (requires Triton from experimental speedups; limited gain on Ampere; faster after warmup, slower first run, recompiles on resolution change)",
                         value=False,
@@ -731,8 +805,13 @@ def build_app() -> "gr.Blocks":
                     batch_gallery = gr.Gallery(label="Results", columns=3, height=240)
             batch_evt = batch_button.click(
                 fn=_batch_folder_stream,
-                inputs=[batch_input, batch_output, batch_prompt, batch_negative, batch_steps, batch_cfg, batch_megapixels, batch_seed, batch_engine, batch_compile, batch_mrflow],
+                inputs=[batch_input, batch_output, batch_prompt, batch_negative, batch_steps, batch_cfg, batch_megapixels, batch_seed, batch_engine, batch_compile, batch_mrflow, batch_consistency, batch_consistency_lora, batch_consistency_strength],
                 outputs=[batch_status, batch_gallery],
+            )
+            batch_consistency.change(
+                fn=lambda enabled: (gr.update(visible=bool(enabled)), gr.update(visible=bool(enabled))),
+                inputs=[batch_consistency],
+                outputs=[batch_consistency_lora, batch_consistency_strength],
             )
             batch_stop.click(fn=_stop_current_job, outputs=batch_status, cancels=[batch_evt])
 
@@ -751,6 +830,21 @@ def build_app() -> "gr.Blocks":
                     t2i_engine = gr.Dropdown(label="Engine", choices=ENGINE_CHOICES, value=DEFAULT_ENGINE_VALUE)
                     t2i_live_preview = gr.Checkbox(label="Show live preview", value=False)
                     t2i_live_preview_image = gr.Image(label="Live preview", visible=False)
+                    t2i_consistency = gr.Checkbox(label="Consistency LoRA (INT8 FLUX.2 Klein 4B)", value=False)
+                    t2i_consistency_lora = gr.Dropdown(
+                        label="Consistency LoRA file",
+                        choices=_available_loras(),
+                        value=_default_consistency_lora_value(),
+                        visible=False,
+                    )
+                    t2i_consistency_strength = gr.Slider(
+                        label="Consistency LoRA strength",
+                        minimum=0.0,
+                        maximum=2.0,
+                        step=0.05,
+                        value=1.0,
+                        visible=False,
+                    )
                     t2i_compile = gr.Checkbox(
                         label="torch.compile (requires Triton from experimental speedups; limited gain on Ampere; faster after warmup, slower first run, recompiles on resolution change)",
                         value=False,
@@ -769,13 +863,18 @@ def build_app() -> "gr.Blocks":
                     t2i_status = gr.Textbox(label="Status")
             t2i_evt = t2i_button.click(
                 fn=_t2i_handler,
-                inputs=[t2i_prompt, t2i_negative, t2i_output, t2i_width, t2i_height, t2i_steps, t2i_cfg, t2i_seed, t2i_engine, t2i_compile, t2i_mrflow, t2i_teacache, t2i_live_preview],
+                inputs=[t2i_prompt, t2i_negative, t2i_output, t2i_width, t2i_height, t2i_steps, t2i_cfg, t2i_seed, t2i_engine, t2i_compile, t2i_mrflow, t2i_teacache, t2i_live_preview, t2i_consistency, t2i_consistency_lora, t2i_consistency_strength],
                 outputs=[t2i_result, t2i_live_preview_image, t2i_status],
             )
             t2i_live_preview.change(
                 fn=lambda enabled: gr.update(visible=bool(enabled)),
                 inputs=[t2i_live_preview],
                 outputs=[t2i_live_preview_image],
+            )
+            t2i_consistency.change(
+                fn=lambda enabled: (gr.update(visible=bool(enabled)), gr.update(visible=bool(enabled))),
+                inputs=[t2i_consistency],
+                outputs=[t2i_consistency_lora, t2i_consistency_strength],
             )
             t2i_stop.click(fn=_stop_current_job, outputs=t2i_status, cancels=[t2i_evt])
 

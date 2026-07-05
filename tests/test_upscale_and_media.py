@@ -195,6 +195,12 @@ def test_app_default_engine_is_int8() -> None:
     assert app.ENGINE_CHOICES[0] == ("INT8 (fastest on Ampere - default)", "int8")
 
 
+def test_app_prefers_installed_consistency_lora_filename(monkeypatch) -> None:
+    monkeypatch.setattr(app, "_available_loras", lambda: ["f2k_4B_consist_20260314.safetensors"])
+
+    assert app._default_consistency_lora_value() == "f2k_4B_consist_20260314.safetensors"
+
+
 def test_app_exposes_model_cleanup_controls() -> None:
     demo = app.build_app()
     button_values = [
@@ -226,7 +232,7 @@ def test_t2i_handler_streams_preview_then_final(monkeypatch) -> None:
 
     assert events[0] == (None, "preview-1", "Rendering preview...")
     assert events[1] == (None, "preview-2", "Rendering preview...")
-    assert events[-1] == ("final.png", "preview-2", "done")
+    assert events[-1] == ("final.png", "final.png", "done")
 
 
 def test_run_depth_edit_uses_requested_base_variant(monkeypatch, tmp_path: Path) -> None:

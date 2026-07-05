@@ -211,6 +211,33 @@ Notes:
 - Expect roughly a ~20 step workflow and about a 5x slowdown versus the distilled edit path.
 - For FLUX.2 Klein 4B, only the **depth** lock mode is available here.
 
+## Consistency LoRA (optional)
+
+The optional consistency LoRA improves edit and generation fidelity by keeping subjects and details more consistent across runs.
+
+Install it with:
+
+```bat
+python -m comfyui_app.installer --with-consistency-lora
+```
+
+Source:
+
+- HF repo: `lrzjason/Consistance_Edit_Lora`
+- file: `f2k_4B_consist_20260314.safetensors`
+- license: Apache-2.0
+
+Strength guidance:
+
+- higher values push for more consistency
+- lower the strength if edits stop applying cleanly
+
+It is available in:
+
+- Image Edit
+- Text-to-Image
+- Batch Folder
+
 ## Dependencies
 
 The ComfyUI helper requirements include `imageio-ffmpeg` so the app can reassemble videos without relying on a system ffmpeg install.
