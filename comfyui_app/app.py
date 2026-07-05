@@ -52,6 +52,215 @@ UPSCALER_CHOICES = [
 QUALITY_CHOICES = [("LOW", "LOW"), ("MEDIUM", "MEDIUM"), ("HIGH", "HIGH"), ("ULTRA", "ULTRA")]
 VIDEO_EXTS = [".mp4", ".mov"]
 DEFAULT_ENGINE_VALUE = "int8"
+UI_STATE_STORAGE_KEY = "comfyui_local_image_app_ui_state_v1"
+UI_STATE_SECRET = "comfyui_local_image_app_ui_state_secret_v1"
+
+
+def _ui_state_defaults() -> dict[str, object]:
+    return {
+        "shared_prompt": "",
+        "shared_negative": "",
+        "edit_image": None,
+        "edit_reference": None,
+        "edit_output": str(DEFAULT_OUTPUT_DIR),
+        "edit_steps": 4,
+        "edit_cfg": 1.0,
+        "edit_megapixels": 1.0,
+        "edit_seed": 0,
+        "edit_engine": DEFAULT_ENGINE_VALUE,
+        "edit_live_preview": False,
+        "edit_consistency": False,
+        "edit_consistency_strength": 1.0,
+        "edit_compile": False,
+        "edit_mrflow": False,
+        "edit_teacache": False,
+        "edit_depth_lock": False,
+        "video_input": None,
+        "video_output": str(DEFAULT_OUTPUT_DIR),
+        "video_steps": 4,
+        "video_cfg": 1.0,
+        "video_megapixels": 1.0,
+        "video_seed": 0,
+        "video_engine": DEFAULT_ENGINE_VALUE,
+        "video_compile": False,
+        "video_mrflow": False,
+        "video_every_n": 1,
+        "video_max_frames": 0,
+        "video_frame_dir": str(DEFAULT_OUTPUT_DIR),
+        "batch_input": str(DEFAULT_OUTPUT_DIR),
+        "batch_output": str(DEFAULT_OUTPUT_DIR),
+        "batch_steps": 4,
+        "batch_cfg": 1.0,
+        "batch_megapixels": 1.0,
+        "batch_seed": 0,
+        "batch_engine": DEFAULT_ENGINE_VALUE,
+        "batch_consistency": False,
+        "batch_consistency_strength": 1.0,
+        "batch_compile": False,
+        "batch_teacache": False,
+        "batch_mrflow": False,
+        "t2i_output": str(DEFAULT_OUTPUT_DIR),
+        "t2i_width": 1024,
+        "t2i_height": 1024,
+        "t2i_steps": 4,
+        "t2i_cfg": 1.0,
+        "t2i_seed": 0,
+        "t2i_engine": DEFAULT_ENGINE_VALUE,
+        "t2i_live_preview": False,
+        "t2i_consistency": False,
+        "t2i_consistency_strength": 1.0,
+        "t2i_compile": False,
+        "t2i_mrflow": False,
+        "t2i_teacache": False,
+        "upscale_image": None,
+        "upscale_output": str(DEFAULT_OUTPUT_DIR),
+        "upscale_upscaler": "rtx",
+        "upscale_scale": 2.0,
+        "upscale_quality": "ULTRA",
+        "upscale_input_folder": str(DEFAULT_OUTPUT_DIR),
+        "upscale_folder_output": str(DEFAULT_OUTPUT_DIR),
+        "upscale_folder_upscaler": "rtx",
+        "upscale_folder_scale": 2.0,
+        "upscale_folder_quality": "ULTRA",
+        "video_upscale_input": None,
+        "video_upscale_output": str(DEFAULT_OUTPUT_DIR),
+        "video_upscale_upscaler": "rtx",
+        "video_upscale_scale": 2.0,
+        "video_upscale_quality": "ULTRA",
+        "model_list": [],
+    }
+
+
+def _ui_state(state: object | None) -> dict[str, object]:
+    merged = _ui_state_defaults()
+    if isinstance(state, dict):
+        for key in merged:
+            if key in state:
+                merged[key] = state[key]
+    return merged
+
+
+def _ui_state_update(state: object | None, key: str, value: object) -> dict[str, object]:
+    updated = _ui_state(state)
+    updated[key] = value
+    return updated
+
+
+def _ui_state_path(state: object | None, key: str) -> str | None:
+    value = _ui_state(state).get(key)
+    if isinstance(value, dict):
+        try:
+            value = _component_path(value)
+        except Exception:
+            return None
+    if isinstance(value, Path):
+        value = str(value)
+    if not isinstance(value, str) or not value:
+        return None
+    if not Path(value).exists():
+        return None
+    return value
+
+
+def _ui_state_choice(state: object | None, key: str, choices: set[str], default: str) -> str:
+    value = _ui_state(state).get(key, default)
+    return value if isinstance(value, str) and value in choices else default
+
+
+def _ui_state_text(state: object | None, key: str) -> str:
+    value = _ui_state(state).get(key, "")
+    return value if isinstance(value, str) else str(value or "")
+
+
+def _restore_ui_state(state: object | None) -> tuple[object, ...]:
+    ui_state = _ui_state(state)
+    edit_depth_lock = bool(ui_state["edit_depth_lock"])
+    edit_live_preview = bool(ui_state["edit_live_preview"])
+    edit_consistency = bool(ui_state["edit_consistency"])
+    batch_consistency = bool(ui_state["batch_consistency"])
+    t2i_live_preview = bool(ui_state["t2i_live_preview"])
+    t2i_consistency = bool(ui_state["t2i_consistency"])
+    return (
+        ui_state["shared_prompt"],
+        ui_state["shared_prompt"],
+        ui_state["shared_prompt"],
+        ui_state["shared_prompt"],
+        ui_state["shared_negative"],
+        ui_state["shared_negative"],
+        ui_state["shared_negative"],
+        ui_state["shared_negative"],
+        gr.update(value=_ui_state_path(ui_state, "edit_image")),
+        gr.update(value=_ui_state_path(ui_state, "edit_reference"), visible=edit_depth_lock),
+        ui_state["edit_output"],
+        ui_state["edit_steps"],
+        ui_state["edit_cfg"],
+        ui_state["edit_megapixels"],
+        ui_state["edit_seed"],
+        _ui_state_choice(ui_state, "edit_engine", {"int8", "nunchaku_int4"}, DEFAULT_ENGINE_VALUE),
+        ui_state["edit_live_preview"],
+        gr.update(visible=edit_live_preview),
+        ui_state["edit_consistency"],
+        gr.update(value=ui_state["edit_consistency_strength"], visible=edit_consistency),
+        ui_state["edit_compile"],
+        ui_state["edit_mrflow"],
+        ui_state["edit_teacache"],
+        ui_state["edit_depth_lock"],
+        gr.update(visible=edit_depth_lock),
+        gr.update(visible=edit_depth_lock),
+        gr.update(value=_ui_state_path(ui_state, "video_input")),
+        ui_state["video_output"],
+        ui_state["video_steps"],
+        ui_state["video_cfg"],
+        ui_state["video_megapixels"],
+        ui_state["video_seed"],
+        _ui_state_choice(ui_state, "video_engine", {"int8", "nunchaku_int4"}, DEFAULT_ENGINE_VALUE),
+        ui_state["video_compile"],
+        ui_state["video_mrflow"],
+        ui_state["video_every_n"],
+        ui_state["video_max_frames"],
+        ui_state["video_frame_dir"],
+        ui_state["batch_input"],
+        ui_state["batch_output"],
+        ui_state["batch_steps"],
+        ui_state["batch_cfg"],
+        ui_state["batch_megapixels"],
+        ui_state["batch_seed"],
+        _ui_state_choice(ui_state, "batch_engine", {"int8", "nunchaku_int4"}, DEFAULT_ENGINE_VALUE),
+        ui_state["batch_consistency"],
+        gr.update(value=ui_state["batch_consistency_strength"], visible=batch_consistency),
+        ui_state["batch_compile"],
+        ui_state["batch_teacache"],
+        ui_state["batch_mrflow"],
+        ui_state["t2i_output"],
+        ui_state["t2i_width"],
+        ui_state["t2i_height"],
+        ui_state["t2i_steps"],
+        ui_state["t2i_cfg"],
+        ui_state["t2i_seed"],
+        _ui_state_choice(ui_state, "t2i_engine", {"int8", "nunchaku_int4"}, DEFAULT_ENGINE_VALUE),
+        ui_state["t2i_live_preview"],
+        ui_state["t2i_consistency"],
+        gr.update(value=ui_state["t2i_consistency_strength"], visible=t2i_consistency),
+        ui_state["t2i_compile"],
+        ui_state["t2i_mrflow"],
+        ui_state["t2i_teacache"],
+        gr.update(value=_ui_state_path(ui_state, "upscale_image")),
+        ui_state["upscale_output"],
+        _ui_state_choice(ui_state, "upscale_upscaler", {"rtx", "esrgan"}, "rtx"),
+        ui_state["upscale_scale"],
+        _ui_state_choice(ui_state, "upscale_quality", {"LOW", "MEDIUM", "HIGH", "ULTRA"}, "ULTRA"),
+        ui_state["upscale_input_folder"],
+        ui_state["upscale_folder_output"],
+        _ui_state_choice(ui_state, "upscale_folder_upscaler", {"rtx", "esrgan"}, "rtx"),
+        ui_state["upscale_folder_scale"],
+        _ui_state_choice(ui_state, "upscale_folder_quality", {"LOW", "MEDIUM", "HIGH", "ULTRA"}, "ULTRA"),
+        gr.update(value=_ui_state_path(ui_state, "video_upscale_input")),
+        ui_state["video_upscale_output"],
+        _ui_state_choice(ui_state, "video_upscale_upscaler", {"rtx", "esrgan"}, "rtx"),
+        ui_state["video_upscale_scale"],
+        _ui_state_choice(ui_state, "video_upscale_quality", {"LOW", "MEDIUM", "HIGH", "ULTRA"}, "ULTRA"),
+        ui_state,
+    )
 
 
 def _friendly_error(exc: Exception) -> str:
@@ -622,12 +831,29 @@ def build_app() -> "gr.Blocks":
         status_box = gr.Markdown(_status_markdown())
         refresh_button = gr.Button("Refresh status")
         refresh_button.click(fn=refresh_status, outputs=status_box)
+        ui_state = gr.BrowserState(
+            _ui_state_defaults(),
+            storage_key=UI_STATE_STORAGE_KEY,
+            secret=UI_STATE_SECRET,
+        )
 
-        def directory_field(label: str, value: str) -> tuple[object, object]:
+        def directory_field(label: str, value: str, *, state_key: str | None = None) -> tuple[object, object]:
             with gr.Row():
                 textbox = gr.Textbox(label=label, value=value, scale=6)
                 browse_button = gr.Button("Browse...", scale=1)
-            browse_button.click(fn=pick_directory, inputs=[textbox], outputs=[textbox])
+            if state_key is None:
+                browse_button.click(fn=pick_directory, inputs=[textbox], outputs=[textbox])
+            else:
+                textbox.input(
+                    fn=lambda state, text: _ui_state_update(state, state_key, text or ""),
+                    inputs=[ui_state, textbox],
+                    outputs=[ui_state],
+                )
+                def _browse_and_store(current_value: str, state: object) -> tuple[str, object]:
+                    selected = pick_directory(current_value)
+                    return selected, _ui_state_update(state, state_key, selected)
+
+                browse_button.click(fn=_browse_and_store, inputs=[textbox, ui_state], outputs=[textbox, ui_state])
             return textbox, browse_button
 
         with gr.Tab("Image Edit"):
@@ -643,7 +869,7 @@ def build_app() -> "gr.Blocks":
                     edit_prompt = gr.Textbox(label="Prompt", lines=4)
                     edit_negative = gr.Textbox(label="Negative prompt", lines=3)
                 with gr.Column():
-                    edit_output, _ = directory_field("Output folder", str(DEFAULT_OUTPUT_DIR))
+                    edit_output, _ = directory_field("Output folder", str(DEFAULT_OUTPUT_DIR), state_key="edit_output")
                     edit_steps = gr.Number(label="Steps", value=4, precision=0)
                     edit_cfg = gr.Number(label="Guidance", value=1.0)
                     edit_megapixels = gr.Number(label="Megapixels", value=1.0)
@@ -713,23 +939,23 @@ def build_app() -> "gr.Blocks":
                     video_input = gr.Video(label="Video")
                     every_n = gr.Number(label="Every Nth frame", value=1, precision=0)
                     max_frames = gr.Number(label="Max frames", value=0, precision=0)
-                    video_output, _ = directory_field("Output folder", str(DEFAULT_OUTPUT_DIR))
+                    video_output, _ = directory_field("Output folder", str(DEFAULT_OUTPUT_DIR), state_key="video_output")
                     extract_button = gr.Button("Extract frames")
                     frame_status = gr.Textbox(label="Status")
                 with gr.Column():
                     frame_dir = gr.Textbox(label="Extracted frames folder", value=str(DEFAULT_OUTPUT_DIR))
-                    edit_prompt = gr.Textbox(label="Prompt", lines=4)
-                    edit_negative = gr.Textbox(label="Negative prompt", lines=3)
-                    edit_steps = gr.Number(label="Steps", value=4, precision=0)
-                    edit_cfg = gr.Number(label="Guidance", value=1.0)
-                    edit_megapixels = gr.Number(label="Megapixels", value=1.0)
-                    edit_seed = gr.Number(label="Seed", value=0, precision=0)
-                    edit_engine = gr.Dropdown(label="Engine", choices=ENGINE_CHOICES, value=DEFAULT_ENGINE_VALUE)
-                    edit_compile = gr.Checkbox(
+                    video_prompt = gr.Textbox(label="Prompt", lines=4)
+                    video_negative = gr.Textbox(label="Negative prompt", lines=3)
+                    video_steps = gr.Number(label="Steps", value=4, precision=0)
+                    video_cfg = gr.Number(label="Guidance", value=1.0)
+                    video_megapixels = gr.Number(label="Megapixels", value=1.0)
+                    video_seed = gr.Number(label="Seed", value=0, precision=0)
+                    video_engine = gr.Dropdown(label="Engine", choices=ENGINE_CHOICES, value=DEFAULT_ENGINE_VALUE)
+                    video_compile = gr.Checkbox(
                         label="torch.compile (requires Triton from experimental speedups; limited gain on Ampere; faster after warmup, slower first run, recompiles on resolution change)",
                         value=False,
                     )
-                    edit_mrflow = gr.Checkbox(
+                    video_mrflow = gr.Checkbox(
                         label="MrFlow staged (experimental - faster; low-res generate + upscale + refine)",
                         value=False,
                     )
@@ -742,7 +968,7 @@ def build_app() -> "gr.Blocks":
             )
             edit_frames_evt = edit_frames_button.click(
                 fn=_edit_frames_handler,
-                inputs=[frame_dir, video_output, edit_prompt, edit_negative, edit_steps, edit_cfg, edit_megapixels, edit_seed, edit_engine, edit_compile, edit_mrflow],
+                inputs=[frame_dir, video_output, video_prompt, video_negative, video_steps, video_cfg, video_megapixels, video_seed, video_engine, video_compile, video_mrflow],
                 outputs=frame_status,
             )
             edit_frames_stop.click(fn=_stop_current_job, outputs=frame_status, cancels=[edit_frames_evt])
@@ -750,8 +976,8 @@ def build_app() -> "gr.Blocks":
         with gr.Tab("Batch Folder"):
             with gr.Row():
                 with gr.Column():
-                    batch_input, _ = directory_field("Input folder", str(DEFAULT_OUTPUT_DIR))
-                    batch_output, _ = directory_field("Output folder", str(DEFAULT_OUTPUT_DIR))
+                    batch_input, _ = directory_field("Input folder", str(DEFAULT_OUTPUT_DIR), state_key="batch_input")
+                    batch_output, _ = directory_field("Output folder", str(DEFAULT_OUTPUT_DIR), state_key="batch_output")
                     batch_prompt = gr.Textbox(label="Prompt", lines=4)
                     batch_negative = gr.Textbox(label="Negative prompt", lines=3)
                 with gr.Column():
@@ -807,7 +1033,7 @@ def build_app() -> "gr.Blocks":
                     t2i_prompt = gr.Textbox(label="Prompt", lines=4)
                     t2i_negative = gr.Textbox(label="Negative prompt", lines=3)
                 with gr.Column():
-                    t2i_output, _ = directory_field("Output folder", str(DEFAULT_OUTPUT_DIR))
+                    t2i_output, _ = directory_field("Output folder", str(DEFAULT_OUTPUT_DIR), state_key="t2i_output")
                     t2i_width = gr.Number(label="Width", value=1024, precision=0)
                     t2i_height = gr.Number(label="Height", value=1024, precision=0)
                     t2i_steps = gr.Number(label="Steps", value=4, precision=0)
@@ -868,7 +1094,7 @@ def build_app() -> "gr.Blocks":
                     with gr.Row():
                         with gr.Column():
                             upscale_image = gr.Image(label="Image", type="filepath")
-                            upscale_output, _ = directory_field("Output folder", str(DEFAULT_OUTPUT_DIR))
+                            upscale_output, _ = directory_field("Output folder", str(DEFAULT_OUTPUT_DIR), state_key="upscale_output")
                         with gr.Column():
                             upscale_upscaler = gr.Dropdown(label="Upscaler", choices=UPSCALER_CHOICES, value="rtx")
                             upscale_scale = gr.Number(label="Scale", value=2.0, precision=2)
@@ -887,8 +1113,8 @@ def build_app() -> "gr.Blocks":
                 with gr.Tab("Folder"):
                     with gr.Row():
                         with gr.Column():
-                            upscale_input_folder, _ = directory_field("Input folder", str(DEFAULT_OUTPUT_DIR))
-                            upscale_folder_output, _ = directory_field("Output folder", str(DEFAULT_OUTPUT_DIR))
+                            upscale_input_folder, _ = directory_field("Input folder", str(DEFAULT_OUTPUT_DIR), state_key="upscale_input_folder")
+                            upscale_folder_output, _ = directory_field("Output folder", str(DEFAULT_OUTPUT_DIR), state_key="upscale_folder_output")
                         with gr.Column():
                             upscale_folder_upscaler = gr.Dropdown(label="Upscaler", choices=UPSCALER_CHOICES, value="rtx")
                             upscale_folder_scale = gr.Number(label="Scale", value=2.0, precision=2)
@@ -908,7 +1134,7 @@ def build_app() -> "gr.Blocks":
             with gr.Row():
                 with gr.Column():
                     video_upscale_input = gr.File(label="Video file", file_count="single", file_types=VIDEO_EXTS, type="filepath")
-                    video_upscale_output, _ = directory_field("Output folder", str(DEFAULT_OUTPUT_DIR))
+                    video_upscale_output, _ = directory_field("Output folder", str(DEFAULT_OUTPUT_DIR), state_key="video_upscale_output")
                     video_upscale_upscaler = gr.Dropdown(label="Upscaler", choices=UPSCALER_CHOICES, value="rtx")
                     video_upscale_scale = gr.Number(label="Scale", value=2.0, precision=2)
                     video_upscale_quality = gr.Dropdown(label="RTX quality", choices=QUALITY_CHOICES, value="ULTRA")
@@ -949,6 +1175,200 @@ def build_app() -> "gr.Blocks":
                 outputs=[model_list, model_total, model_cleanup_preview, model_status, model_cleanup_confirm, model_cleanup_state],
             )
 
+        def bind_textbox(component, key: str) -> None:
+            component.input(
+                fn=lambda state, value: _ui_state_update(state, key, value or ""),
+                inputs=[ui_state, component],
+                outputs=[ui_state],
+            )
+
+        def bind_value(component, key: str) -> None:
+            component.change(
+                fn=lambda state, value: _ui_state_update(state, key, value),
+                inputs=[ui_state, component],
+                outputs=[ui_state],
+            )
+
+        def bind_path(component, key: str) -> None:
+            def persist(state, value):
+                if value in (None, ""):
+                    return _ui_state_update(state, key, None)
+                try:
+                    path = _component_path(value)
+                except Exception:
+                    return _ui_state_update(state, key, None)
+                return _ui_state_update(state, key, str(path) if path.exists() else None)
+
+            component.change(fn=persist, inputs=[ui_state, component], outputs=[ui_state])
+
+        def bind_shared_text(*components) -> None:
+            outputs = [*components, ui_state]
+
+            def sync(state, value):
+                text = value or ""
+                updated = _ui_state_update(state, "shared_prompt", text)
+                return (*([text] * len(components)), updated)
+
+            for component in components:
+                component.input(fn=sync, inputs=[ui_state, component], outputs=outputs)
+
+        def bind_shared_negative(*components) -> None:
+            outputs = [*components, ui_state]
+
+            def sync(state, value):
+                text = value or ""
+                updated = _ui_state_update(state, "shared_negative", text)
+                return (*([text] * len(components)), updated)
+
+            for component in components:
+                component.input(fn=sync, inputs=[ui_state, component], outputs=outputs)
+
+        bind_shared_text(edit_prompt, batch_prompt, t2i_prompt, video_prompt)
+        bind_shared_negative(edit_negative, batch_negative, t2i_negative, video_negative)
+        bind_path(edit_image, "edit_image")
+        bind_path(edit_reference, "edit_reference")
+        bind_textbox(frame_dir, "video_frame_dir")
+        bind_path(video_input, "video_input")
+        bind_path(upscale_image, "upscale_image")
+        bind_path(video_upscale_input, "video_upscale_input")
+        bind_value(every_n, "video_every_n")
+        bind_value(max_frames, "video_max_frames")
+        bind_value(video_steps, "video_steps")
+        bind_value(video_cfg, "video_cfg")
+        bind_value(video_megapixels, "video_megapixels")
+        bind_value(video_seed, "video_seed")
+        bind_value(video_engine, "video_engine")
+        bind_value(video_compile, "video_compile")
+        bind_value(video_mrflow, "video_mrflow")
+        bind_value(edit_steps, "edit_steps")
+        bind_value(edit_cfg, "edit_cfg")
+        bind_value(edit_megapixels, "edit_megapixels")
+        bind_value(edit_seed, "edit_seed")
+        bind_value(edit_engine, "edit_engine")
+        bind_value(edit_live_preview, "edit_live_preview")
+        bind_value(edit_consistency, "edit_consistency")
+        bind_value(edit_consistency_strength, "edit_consistency_strength")
+        bind_value(edit_compile, "edit_compile")
+        bind_value(edit_mrflow, "edit_mrflow")
+        bind_value(edit_teacache, "edit_teacache")
+        bind_value(edit_depth_lock, "edit_depth_lock")
+        bind_value(batch_steps, "batch_steps")
+        bind_value(batch_cfg, "batch_cfg")
+        bind_value(batch_megapixels, "batch_megapixels")
+        bind_value(batch_seed, "batch_seed")
+        bind_value(batch_engine, "batch_engine")
+        bind_value(batch_consistency, "batch_consistency")
+        bind_value(batch_consistency_strength, "batch_consistency_strength")
+        bind_value(batch_compile, "batch_compile")
+        bind_value(batch_teacache, "batch_teacache")
+        bind_value(batch_mrflow, "batch_mrflow")
+        bind_value(t2i_width, "t2i_width")
+        bind_value(t2i_height, "t2i_height")
+        bind_value(t2i_steps, "t2i_steps")
+        bind_value(t2i_cfg, "t2i_cfg")
+        bind_value(t2i_seed, "t2i_seed")
+        bind_value(t2i_engine, "t2i_engine")
+        bind_value(t2i_live_preview, "t2i_live_preview")
+        bind_value(t2i_consistency, "t2i_consistency")
+        bind_value(t2i_consistency_strength, "t2i_consistency_strength")
+        bind_value(t2i_compile, "t2i_compile")
+        bind_value(t2i_mrflow, "t2i_mrflow")
+        bind_value(t2i_teacache, "t2i_teacache")
+        bind_value(upscale_upscaler, "upscale_upscaler")
+        bind_value(upscale_scale, "upscale_scale")
+        bind_value(upscale_quality, "upscale_quality")
+        bind_value(upscale_folder_upscaler, "upscale_folder_upscaler")
+        bind_value(upscale_folder_scale, "upscale_folder_scale")
+        bind_value(upscale_folder_quality, "upscale_folder_quality")
+        bind_value(video_upscale_upscaler, "video_upscale_upscaler")
+        bind_value(video_upscale_scale, "video_upscale_scale")
+        bind_value(video_upscale_quality, "video_upscale_quality")
+
+        demo.load(
+            fn=_restore_ui_state,
+            inputs=[ui_state],
+            outputs=[
+                edit_prompt,
+                batch_prompt,
+                t2i_prompt,
+                video_prompt,
+                edit_negative,
+                batch_negative,
+                t2i_negative,
+                video_negative,
+                edit_image,
+                edit_reference,
+                edit_output,
+                edit_steps,
+                edit_cfg,
+                edit_megapixels,
+                edit_seed,
+                edit_engine,
+                edit_live_preview,
+                edit_live_preview_image,
+                edit_consistency,
+                edit_consistency_strength,
+                edit_compile,
+                edit_mrflow,
+                edit_teacache,
+                edit_depth_lock,
+                edit_depth_note,
+                edit_depth_preview,
+                video_input,
+                video_output,
+                video_steps,
+                video_cfg,
+                video_megapixels,
+                video_seed,
+                video_engine,
+                video_compile,
+                video_mrflow,
+                every_n,
+                max_frames,
+                frame_dir,
+                batch_input,
+                batch_output,
+                batch_steps,
+                batch_cfg,
+                batch_megapixels,
+                batch_seed,
+                batch_engine,
+                batch_consistency,
+                batch_consistency_strength,
+                batch_compile,
+                batch_teacache,
+                batch_mrflow,
+                t2i_output,
+                t2i_width,
+                t2i_height,
+                t2i_steps,
+                t2i_cfg,
+                t2i_seed,
+                t2i_engine,
+                t2i_live_preview,
+                t2i_consistency,
+                t2i_consistency_strength,
+                t2i_compile,
+                t2i_mrflow,
+                t2i_teacache,
+                upscale_image,
+                upscale_output,
+                upscale_upscaler,
+                upscale_scale,
+                upscale_quality,
+                upscale_input_folder,
+                upscale_folder_output,
+                upscale_folder_upscaler,
+                upscale_folder_scale,
+                upscale_folder_quality,
+                video_upscale_input,
+                video_upscale_output,
+                video_upscale_upscaler,
+                video_upscale_scale,
+                video_upscale_quality,
+                ui_state,
+            ],
+        )
         demo.load(fn=_model_manager_refresh, outputs=[model_list, model_total, model_status])
         demo.queue()
     return demo

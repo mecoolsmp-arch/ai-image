@@ -11,6 +11,23 @@ from comfyui_app.generation import GenerationResult
 from comfyui_app.workflow_builder import build_esrgan_upscale_prompt, build_rtx_upscale_prompt
 
 
+def _assert_restored_value(actual: object, wanted: object, *, path_like: bool = False) -> None:
+    if isinstance(wanted, dict) and wanted.get("__type__") == "update":
+        assert isinstance(actual, dict)
+        assert actual.get("__type__") == "update"
+        wanted_value = wanted.get("value")
+        if path_like and isinstance(wanted_value, str):
+            actual_value = actual.get("value")
+            assert isinstance(actual_value, str)
+            assert Path(actual_value).name == Path(wanted_value).name
+        else:
+            assert actual.get("value") == wanted_value
+        if "visible" in wanted:
+            assert actual.get("visible") == wanted["visible"]
+        return
+    assert actual == wanted
+
+
 def test_build_rtx_upscale_prompt_serializes_flat_inputs() -> None:
     prompt = build_rtx_upscale_prompt(image="input.png", resize_type="scale by multiplier", scale=2.0, quality="ULTRA")
 
@@ -211,6 +228,277 @@ def test_app_exposes_model_cleanup_controls() -> None:
     assert "Confirm removal" in button_values
     assert any("TeaCache speedup" in str(label or "") for label in labels)
     assert not any(label and "base instead" in str(label).lower() for label in labels)
+
+
+def test_app_configures_browser_state_for_persistence() -> None:
+    demo = app.build_app()
+    browser_states = [component for component in demo.config["components"] if isinstance(component, dict) and component.get("type") == "browserstate"]
+
+    assert len(browser_states) == 1
+    props = browser_states[0]["props"]
+    assert props["storage_key"] == app.UI_STATE_STORAGE_KEY
+    assert props["secret"] == app.UI_STATE_SECRET
+    assert props["default_value"]["shared_prompt"] == ""
+    assert props["default_value"]["shared_negative"] == ""
+
+
+def test_restore_ui_state_shares_prompts_and_skips_missing_files(tmp_path: Path) -> None:
+    def update(*, value=None, visible=None):
+        data = {"__type__": "update"}
+        if value is not None:
+            data["value"] = value
+        if visible is not None:
+            data["visible"] = visible
+        return data
+
+    input_image = tmp_path / "input.png"
+    input_image.write_bytes(b"image")
+    reference_image = tmp_path / "reference.png"
+    reference_image.write_bytes(b"reference")
+    video_input = tmp_path / "video.mp4"
+    video_input.write_bytes(b"video")
+    upscale_image = tmp_path / "upscale.png"
+    upscale_image.write_bytes(b"upscale")
+    video_upscale_input = tmp_path / "video-upscale.mp4"
+    video_upscale_input.write_bytes(b"video-upscale")
+
+    state = {
+        "shared_prompt": "PROMPT",
+        "shared_negative": "NEGATIVE",
+        "edit_image": str(input_image),
+        "edit_reference": str(reference_image),
+        "edit_output": "EDIT_OUTPUT",
+        "edit_steps": 101,
+        "edit_cfg": 1.01,
+        "edit_megapixels": 1.11,
+        "edit_seed": 111,
+        "edit_engine": "nunchaku_int4",
+        "edit_live_preview": True,
+        "edit_consistency": False,
+        "edit_consistency_strength": 1.23,
+        "edit_compile": True,
+        "edit_mrflow": False,
+        "edit_teacache": True,
+        "edit_depth_lock": True,
+        "video_input": str(video_input),
+        "video_output": "VIDEO_OUTPUT",
+        "video_steps": 202,
+        "video_cfg": 2.02,
+        "video_megapixels": 2.22,
+        "video_seed": 222,
+        "video_engine": "int8",
+        "video_compile": False,
+        "video_mrflow": True,
+        "video_every_n": 3,
+        "video_max_frames": 4,
+        "video_frame_dir": "VIDEO_FRAMES",
+        "batch_input": "BATCH_INPUT",
+        "batch_output": "BATCH_OUTPUT",
+        "batch_steps": 303,
+        "batch_cfg": 3.03,
+        "batch_megapixels": 3.33,
+        "batch_seed": 333,
+        "batch_engine": "nunchaku_int4",
+        "batch_consistency": True,
+        "batch_consistency_strength": 0.45,
+        "batch_compile": False,
+        "batch_teacache": True,
+        "batch_mrflow": False,
+        "t2i_output": "T2I_OUTPUT",
+        "t2i_width": 512,
+        "t2i_height": 768,
+        "t2i_steps": 404,
+        "t2i_cfg": 4.04,
+        "t2i_seed": 444,
+        "t2i_engine": "nunchaku_int4",
+        "t2i_live_preview": False,
+        "t2i_consistency": True,
+        "t2i_consistency_strength": 1.66,
+        "t2i_compile": True,
+        "t2i_mrflow": False,
+        "t2i_teacache": True,
+        "upscale_image": str(upscale_image),
+        "upscale_output": "UPSCALE_OUTPUT",
+        "upscale_upscaler": "esrgan",
+        "upscale_scale": 2.5,
+        "upscale_quality": "LOW",
+        "upscale_input_folder": "UPSCALE_INPUT",
+        "upscale_folder_output": "UPSCALE_FOLDER_OUTPUT",
+        "upscale_folder_upscaler": "esrgan",
+        "upscale_folder_scale": 1.5,
+        "upscale_folder_quality": "MEDIUM",
+        "video_upscale_input": str(video_upscale_input),
+        "video_upscale_output": "VIDEO_UPSCALE_OUTPUT",
+        "video_upscale_upscaler": "esrgan",
+        "video_upscale_scale": 1.75,
+        "video_upscale_quality": "HIGH",
+    }
+
+    restored = app._restore_ui_state(state)
+
+    expected = [
+        "PROMPT",
+        "PROMPT",
+        "PROMPT",
+        "PROMPT",
+        "NEGATIVE",
+        "NEGATIVE",
+        "NEGATIVE",
+        "NEGATIVE",
+        update(value=str(input_image)),
+        update(value=str(reference_image), visible=True),
+        "EDIT_OUTPUT",
+        101,
+        1.01,
+        1.11,
+        111,
+        "nunchaku_int4",
+        True,
+        update(visible=True),
+        False,
+        update(value=1.23, visible=False),
+        True,
+        False,
+        True,
+        True,
+        update(visible=True),
+        update(visible=True),
+        update(value=str(video_input)),
+        "VIDEO_OUTPUT",
+        202,
+        2.02,
+        2.22,
+        222,
+        "int8",
+        False,
+        True,
+        3,
+        4,
+        "VIDEO_FRAMES",
+        "BATCH_INPUT",
+        "BATCH_OUTPUT",
+        303,
+        3.03,
+        3.33,
+        333,
+        "nunchaku_int4",
+        True,
+        update(value=0.45, visible=True),
+        False,
+        True,
+        False,
+        "T2I_OUTPUT",
+        512,
+        768,
+        404,
+        4.04,
+        444,
+        "nunchaku_int4",
+        False,
+        True,
+        update(value=1.66, visible=True),
+        True,
+        False,
+        True,
+        update(value=str(upscale_image)),
+        "UPSCALE_OUTPUT",
+        "esrgan",
+        2.5,
+        "LOW",
+        "UPSCALE_INPUT",
+        "UPSCALE_FOLDER_OUTPUT",
+        "esrgan",
+        1.5,
+        "MEDIUM",
+        update(value=str(video_upscale_input)),
+        "VIDEO_UPSCALE_OUTPUT",
+        "esrgan",
+        1.75,
+        "HIGH",
+        {
+            **app._ui_state_defaults(),
+            **state,
+        },
+    ]
+
+    assert len(restored) == len(expected)
+    path_like_indices = {8, 9, 26, 63, 73}
+    for index, (actual, wanted) in enumerate(zip(restored, expected)):
+        _assert_restored_value(actual, wanted, path_like=index in path_like_indices)
+
+    restorable_keys = [
+        "shared_prompt",
+        "shared_negative",
+        "edit_image",
+        "edit_reference",
+        "edit_output",
+        "edit_steps",
+        "edit_cfg",
+        "edit_megapixels",
+        "edit_seed",
+        "edit_engine",
+        "edit_live_preview",
+        "edit_consistency",
+        "edit_consistency_strength",
+        "edit_compile",
+        "edit_mrflow",
+        "edit_teacache",
+        "edit_depth_lock",
+        "video_input",
+        "video_output",
+        "video_steps",
+        "video_cfg",
+        "video_megapixels",
+        "video_seed",
+        "video_engine",
+        "video_compile",
+        "video_mrflow",
+        "video_every_n",
+        "video_max_frames",
+        "video_frame_dir",
+        "batch_input",
+        "batch_output",
+        "batch_steps",
+        "batch_cfg",
+        "batch_megapixels",
+        "batch_seed",
+        "batch_engine",
+        "batch_consistency",
+        "batch_consistency_strength",
+        "batch_compile",
+        "batch_teacache",
+        "batch_mrflow",
+        "t2i_output",
+        "t2i_width",
+        "t2i_height",
+        "t2i_steps",
+        "t2i_cfg",
+        "t2i_seed",
+        "t2i_engine",
+        "t2i_live_preview",
+        "t2i_consistency",
+        "t2i_consistency_strength",
+        "t2i_compile",
+        "t2i_mrflow",
+        "t2i_teacache",
+        "upscale_image",
+        "upscale_output",
+        "upscale_upscaler",
+        "upscale_scale",
+        "upscale_quality",
+        "upscale_input_folder",
+        "upscale_folder_output",
+        "upscale_folder_upscaler",
+        "upscale_folder_scale",
+        "upscale_folder_quality",
+        "video_upscale_input",
+        "video_upscale_output",
+        "video_upscale_upscaler",
+        "video_upscale_scale",
+        "video_upscale_quality",
+    ]
+    # model_list is refresh-only UI state, not a restorable control.
+    assert set(restorable_keys) == {key for key in app._ui_state_defaults() if key != "model_list"}
 
 
 def test_t2i_handler_streams_preview_then_final(monkeypatch) -> None:
