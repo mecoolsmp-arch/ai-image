@@ -17,13 +17,6 @@ DEPTH_ANYTHING_V2_PREPROCESSOR_CLASS = "DepthAnythingV2Preprocessor"
 LORA_LOADER_MODEL_ONLY_CLASS = "LoraLoaderModelOnly"
 REFERENCE_LATENT_CLASS = "ReferenceLatent"
 REFCONTROL_TRIGGER = "refcontrol"
-TEACACHE_NODE_CLASS = "TeaCache"
-TEACACHE_CUSTOM_NODE_DIR = COMFYUI_DIR / "custom_nodes" / "ComfyUI-TeaCache"
-TEACACHE_MODEL_TYPE = "flux"
-TEACACHE_REL_L1_THRESH = 0.4
-TEACACHE_START_PERCENT = 0.0
-TEACACHE_END_PERCENT = 1.0
-TEACACHE_CACHE_DEVICE = "cpu"
 UPSCALE_MODEL_LOADER_CLASS = "UpscaleModelLoader"
 IMAGE_UPSCALE_WITH_MODEL_CLASS = "ImageUpscaleWithModel"
 SPLIT_SIGMAS_DENOISE_CLASS = "SplitSigmasDenoise"
@@ -45,29 +38,6 @@ def _loader_node(diffusion_model: str) -> dict[str, Any]:
         return _node("UnetLoaderGGUF", unet_name=diffusion_model)
     return _node("UNETLoader", unet_name=diffusion_model, weight_dtype="default")
 
-
-def _teacache_available() -> bool:
-    return TEACACHE_CUSTOM_NODE_DIR.exists()
-
-
-def _apply_teacache(nodes: dict[str, Any], source_model_link: list[Any], *, model_type: str = TEACACHE_MODEL_TYPE) -> list[Any]:
-    if not _teacache_available():
-        return source_model_link
-    node_id = str(max(int(node_id) for node_id in nodes.keys() if node_id.isdigit()) + 1)
-    nodes[node_id] = _node(
-        TEACACHE_NODE_CLASS,
-        model=source_model_link,
-        model_type=model_type,
-        rel_l1_thresh=TEACACHE_REL_L1_THRESH,
-        start_percent=TEACACHE_START_PERCENT,
-        end_percent=TEACACHE_END_PERCENT,
-        cache_device=TEACACHE_CACHE_DEVICE,
-    )
-    tea_link = _link(node_id)
-    for node in nodes.values():
-        if isinstance(node, dict) and node.get("class_type") == "CFGGuider":
-            node["inputs"]["model"] = tea_link
-    return tea_link
 
 
 def _apply_consistency_lora(nodes: dict[str, Any], base_model_link: list[Any], lora_name: str, strength: float) -> list[Any]:
@@ -127,7 +97,6 @@ def build_edit_prompt(
     batch_size: int,
     use_tiled_decode: bool,
     decode_tile_size: int,
-    use_teacache: bool = False,
     consistency_lora_name: str | None = None,
     consistency_lora_strength: float = CONSISTENCY_LORA_STRENGTH_DEFAULT,
     engine: str = "default",
@@ -172,9 +141,6 @@ def build_edit_prompt(
     if consistency_lora_name:
         model_link = _apply_consistency_lora(nodes, _link("1"), consistency_lora_name, consistency_lora_strength)
         nodes["16"]["inputs"]["model"] = model_link
-    if use_teacache:
-        model_link = _apply_teacache(nodes, model_link)
-        nodes["16"]["inputs"]["model"] = model_link
     if use_torch_compile:
         _apply_torch_compile(nodes, model_link)
     return nodes
@@ -195,7 +161,6 @@ def build_t2i_prompt(
     batch_size: int,
     use_tiled_decode: bool,
     decode_tile_size: int,
-    use_teacache: bool = False,
     consistency_lora_name: str | None = None,
     consistency_lora_strength: float = CONSISTENCY_LORA_STRENGTH_DEFAULT,
     engine: str = "default",
@@ -228,9 +193,6 @@ def build_t2i_prompt(
     if consistency_lora_name:
         model_link = _apply_consistency_lora(nodes, _link("1"), consistency_lora_name, consistency_lora_strength)
         nodes["10"]["inputs"]["model"] = model_link
-    if use_teacache:
-        model_link = _apply_teacache(nodes, model_link)
-        nodes["10"]["inputs"]["model"] = model_link
     if use_torch_compile:
         _apply_torch_compile(nodes, model_link)
     return nodes
@@ -257,7 +219,6 @@ def build_mrflow_t2i_prompt(
     use_tiled_decode: bool,
     decode_tile_size: int,
     steps: int | None = None,
-    use_teacache: bool = False,
     engine: str = "default",
     use_torch_compile: bool = False,
 ) -> dict[str, Any]:
@@ -458,7 +419,6 @@ def build_depth_refcontrol_edit_prompt(
     cfg: float = 5.0,
     lora_strength: float = 1.0,
     megapixels: float = 1.0,
-    use_teacache: bool = False,
 ) -> dict[str, Any]:
     positive_prompt = _ensure_refcontrol_prompt(prompt)
     model_link = _link("4")
@@ -510,9 +470,6 @@ def build_depth_refcontrol_edit_prompt(
         "26": _node("VAEDecode", samples=_link("25"), vae=_link("3")),
         "27": _node("SaveImage", images=_link("26"), filename_prefix="Flux2-Klein-RefControl-Depth"),
     }
-    if use_teacache:
-        model_link = _apply_teacache(nodes, model_link)
-        nodes["24"]["inputs"]["model"] = model_link
     return nodes
 
 

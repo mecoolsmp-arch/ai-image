@@ -73,7 +73,6 @@ def _ui_state_defaults() -> dict[str, object]:
         "edit_consistency_strength": 1.0,
         "edit_compile": False,
         "edit_mrflow": False,
-        "edit_teacache": False,
         "edit_depth_lock": False,
         "video_input": None,
         "video_output": str(DEFAULT_OUTPUT_DIR),
@@ -97,7 +96,6 @@ def _ui_state_defaults() -> dict[str, object]:
         "batch_consistency": False,
         "batch_consistency_strength": 1.0,
         "batch_compile": False,
-        "batch_teacache": False,
         "batch_mrflow": False,
         "t2i_output": str(DEFAULT_OUTPUT_DIR),
         "t2i_width": 1024,
@@ -111,7 +109,6 @@ def _ui_state_defaults() -> dict[str, object]:
         "t2i_consistency_strength": 1.0,
         "t2i_compile": False,
         "t2i_mrflow": False,
-        "t2i_teacache": False,
         "upscale_image": None,
         "upscale_output": str(DEFAULT_OUTPUT_DIR),
         "upscale_upscaler": "rtx",
@@ -203,7 +200,6 @@ def _restore_ui_state(state: object | None) -> tuple[object, ...]:
         gr.update(value=ui_state["edit_consistency_strength"], visible=edit_consistency),
         ui_state["edit_compile"],
         ui_state["edit_mrflow"],
-        ui_state["edit_teacache"],
         ui_state["edit_depth_lock"],
         gr.update(visible=edit_depth_lock),
         gr.update(visible=edit_depth_lock),
@@ -229,7 +225,6 @@ def _restore_ui_state(state: object | None) -> tuple[object, ...]:
         ui_state["batch_consistency"],
         gr.update(value=ui_state["batch_consistency_strength"], visible=batch_consistency),
         ui_state["batch_compile"],
-        ui_state["batch_teacache"],
         ui_state["batch_mrflow"],
         ui_state["t2i_output"],
         ui_state["t2i_width"],
@@ -243,7 +238,6 @@ def _restore_ui_state(state: object | None) -> tuple[object, ...]:
         gr.update(value=ui_state["t2i_consistency_strength"], visible=t2i_consistency),
         ui_state["t2i_compile"],
         ui_state["t2i_mrflow"],
-        ui_state["t2i_teacache"],
         gr.update(value=_ui_state_path(ui_state, "upscale_image")),
         ui_state["upscale_output"],
         _ui_state_choice(ui_state, "upscale_upscaler", {"rtx", "esrgan"}, "rtx"),
@@ -421,7 +415,6 @@ def _edit_handler(
     engine: str,
     use_torch_compile: bool,
     mrflow: bool,
-    use_teacache: bool,
     depth_lock: bool,
     live_preview: bool,
     consistency: bool = False,
@@ -439,7 +432,6 @@ def _edit_handler(
                 output_dir,
                 seed=int(seed),
                 megapixels=float(megapixels),
-                use_teacache=bool(use_teacache),
             )
             yield str(result.image_path), None, _as_gr_image(result.preview_path), result.status
             return
@@ -455,7 +447,6 @@ def _edit_handler(
                 megapixels=float(megapixels),
                 engine=engine,
                 use_torch_compile=bool(use_torch_compile),
-                use_teacache=bool(use_teacache),
                 use_consistency_lora=bool(consistency),
                 consistency_lora_name=None,
                 consistency_lora_strength=float(consistency_strength),
@@ -484,8 +475,7 @@ def _edit_handler(
                     megapixels=float(megapixels),
                     engine=engine,
                     use_torch_compile=bool(use_torch_compile),
-                    use_teacache=bool(use_teacache),
-                    use_consistency_lora=bool(consistency),
+                        use_consistency_lora=bool(consistency),
                     consistency_lora_name=None,
                     consistency_lora_strength=float(consistency_strength),
                     mrflow=bool(mrflow),
@@ -527,7 +517,6 @@ def _t2i_handler(
     engine: str,
     use_torch_compile: bool,
     mrflow: bool,
-    use_teacache: bool,
     live_preview: bool,
     consistency: bool = False,
     consistency_strength: float = 1.0,
@@ -544,7 +533,6 @@ def _t2i_handler(
                 cfg=float(cfg),
                 seed=int(seed),
                 engine=engine,
-                use_teacache=bool(use_teacache),
                 use_torch_compile=bool(use_torch_compile),
                 use_consistency_lora=bool(consistency),
                 consistency_lora_name=None,
@@ -573,8 +561,7 @@ def _t2i_handler(
                     cfg=float(cfg),
                     seed=int(seed),
                     engine=engine,
-                    use_teacache=bool(use_teacache),
-                    use_torch_compile=bool(use_torch_compile),
+                        use_torch_compile=bool(use_torch_compile),
                     use_consistency_lora=bool(consistency),
                     consistency_lora_name=None,
                     consistency_lora_strength=float(consistency_strength),
@@ -649,7 +636,6 @@ def _batch_folder_stream(
     engine: str,
     use_torch_compile: bool,
     mrflow: bool,
-    use_teacache: bool,
     use_consistency_lora: bool,
     consistency_lora_strength: float,
 ):
@@ -675,7 +661,6 @@ def _batch_folder_stream(
             megapixels=float(megapixels),
             engine=engine,
             use_torch_compile=bool(use_torch_compile),
-            use_teacache=bool(use_teacache),
             use_consistency_lora=bool(use_consistency_lora),
             consistency_lora_name=None,
             consistency_lora_strength=float(consistency_lora_strength),
@@ -898,10 +883,6 @@ def build_app() -> "gr.Blocks":
                         label="MrFlow staged (experimental - faster; low-res generate + upscale + refine)",
                         value=False,
                     )
-                    edit_teacache = gr.Checkbox(
-                        label="Experimental: TeaCache speedup (multi-step flows only)",
-                        value=False,
-                    )
                     edit_depth_lock = gr.Checkbox(
                         label="Pose/Shape lock (depth reference) — experimental, slower (~20 steps, base model)",
                         value=False,
@@ -912,7 +893,7 @@ def build_app() -> "gr.Blocks":
                     edit_status = gr.Textbox(label="Status")
             edit_run = edit_button.click(
                 fn=_edit_handler,
-                inputs=[edit_image, edit_reference, edit_prompt, edit_negative, edit_output, edit_steps, edit_cfg, edit_megapixels, edit_seed, edit_engine, edit_compile, edit_mrflow, edit_teacache, edit_depth_lock, edit_live_preview, edit_consistency, edit_consistency_strength],
+                inputs=[edit_image, edit_reference, edit_prompt, edit_negative, edit_output, edit_steps, edit_cfg, edit_megapixels, edit_seed, edit_engine, edit_compile, edit_mrflow, edit_depth_lock, edit_live_preview, edit_consistency, edit_consistency_strength],
                 outputs=[edit_result, edit_live_preview_image, edit_depth_preview, edit_status],
             )
             edit_depth_lock.change(
@@ -1003,10 +984,6 @@ def build_app() -> "gr.Blocks":
                         label="torch.compile (requires Triton from experimental speedups; limited gain on Ampere; faster after warmup, slower first run, recompiles on resolution change)",
                         value=False,
                     )
-                    batch_teacache = gr.Checkbox(
-                        label="Experimental: TeaCache speedup (multi-step flows only)",
-                        value=False,
-                    )
                     batch_mrflow = gr.Checkbox(
                         label="MrFlow staged (experimental - faster; low-res generate + upscale + refine)",
                         value=False,
@@ -1017,7 +994,7 @@ def build_app() -> "gr.Blocks":
                     batch_gallery = gr.Gallery(label="Results", columns=3, height=240)
             batch_evt = batch_button.click(
                 fn=_batch_folder_stream,
-                inputs=[batch_input, batch_output, batch_prompt, batch_negative, batch_steps, batch_cfg, batch_megapixels, batch_seed, batch_engine, batch_compile, batch_mrflow, batch_teacache, batch_consistency, batch_consistency_strength],
+                inputs=[batch_input, batch_output, batch_prompt, batch_negative, batch_steps, batch_cfg, batch_megapixels, batch_seed, batch_engine, batch_compile, batch_mrflow, batch_consistency, batch_consistency_strength],
                 outputs=[batch_status, batch_gallery],
             )
             batch_consistency.change(
@@ -1063,17 +1040,13 @@ def build_app() -> "gr.Blocks":
                         label="MrFlow staged (experimental - faster; low-res generate + upscale + refine)",
                         value=False,
                     )
-                    t2i_teacache = gr.Checkbox(
-                        label="Experimental: TeaCache speedup (multi-step flows only)",
-                        value=False,
-                    )
                     t2i_button = gr.Button("Generate")
                     t2i_stop = gr.Button("Stop")
                     t2i_result = gr.Image(label="Result")
                     t2i_status = gr.Textbox(label="Status")
             t2i_evt = t2i_button.click(
                 fn=_t2i_handler,
-                inputs=[t2i_prompt, t2i_negative, t2i_output, t2i_width, t2i_height, t2i_steps, t2i_cfg, t2i_seed, t2i_engine, t2i_compile, t2i_mrflow, t2i_teacache, t2i_live_preview, t2i_consistency, t2i_consistency_strength],
+                inputs=[t2i_prompt, t2i_negative, t2i_output, t2i_width, t2i_height, t2i_steps, t2i_cfg, t2i_seed, t2i_engine, t2i_compile, t2i_mrflow, t2i_live_preview, t2i_consistency, t2i_consistency_strength],
                 outputs=[t2i_result, t2i_live_preview_image, t2i_status],
             )
             t2i_live_preview.change(
@@ -1269,7 +1242,6 @@ def build_app() -> "gr.Blocks":
         bind_value(edit_consistency_strength, "edit_consistency_strength")
         bind_value(edit_compile, "edit_compile")
         bind_value(edit_mrflow, "edit_mrflow")
-        bind_value(edit_teacache, "edit_teacache")
         bind_value(edit_depth_lock, "edit_depth_lock")
         bind_value(batch_steps, "batch_steps")
         bind_value(batch_cfg, "batch_cfg")
@@ -1279,7 +1251,6 @@ def build_app() -> "gr.Blocks":
         bind_value(batch_consistency, "batch_consistency")
         bind_value(batch_consistency_strength, "batch_consistency_strength")
         bind_value(batch_compile, "batch_compile")
-        bind_value(batch_teacache, "batch_teacache")
         bind_value(batch_mrflow, "batch_mrflow")
         bind_value(t2i_width, "t2i_width")
         bind_value(t2i_height, "t2i_height")
@@ -1292,7 +1263,6 @@ def build_app() -> "gr.Blocks":
         bind_value(t2i_consistency_strength, "t2i_consistency_strength")
         bind_value(t2i_compile, "t2i_compile")
         bind_value(t2i_mrflow, "t2i_mrflow")
-        bind_value(t2i_teacache, "t2i_teacache")
         bind_value(upscale_upscaler, "upscale_upscaler")
         bind_value(upscale_scale, "upscale_scale")
         bind_value(upscale_quality, "upscale_quality")
@@ -1329,7 +1299,7 @@ def build_app() -> "gr.Blocks":
                 edit_consistency_strength,
                 edit_compile,
                 edit_mrflow,
-                edit_teacache,
+                
                 edit_depth_lock,
                 edit_depth_note,
                 edit_depth_preview,
@@ -1355,7 +1325,7 @@ def build_app() -> "gr.Blocks":
                 batch_consistency,
                 batch_consistency_strength,
                 batch_compile,
-                batch_teacache,
+                
                 batch_mrflow,
                 t2i_output,
                 t2i_width,
@@ -1369,7 +1339,7 @@ def build_app() -> "gr.Blocks":
                 t2i_consistency_strength,
                 t2i_compile,
                 t2i_mrflow,
-                t2i_teacache,
+                
                 upscale_image,
                 upscale_output,
                 upscale_upscaler,

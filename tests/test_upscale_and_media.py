@@ -202,7 +202,7 @@ def test_image_edit_handler_routes_to_depth_path_only_when_enabled(monkeypatch) 
     assert calls[0][0] == "edit"
 
     calls.clear()
-    result = list(app._edit_handler("input.png", "reference.png", "prompt", "negative", "out", 4, 1.0, 1.0, 0, "int8", False, False, False, True, False))
+    result = list(app._edit_handler("input.png", "reference.png", "prompt", "negative", "out", 4, 1.0, 1.0, 0, "int8", False, False, True, False, False))
     assert result == [("depth.png", None, "depth-map.png", "depth")]
     assert calls[0][0] == "depth"
 
@@ -226,7 +226,6 @@ def test_app_exposes_model_cleanup_controls() -> None:
     ]
     assert "Remove unused / duplicate models" in button_values
     assert "Confirm removal" in button_values
-    assert any("TeaCache speedup" in str(label or "") for label in labels)
     assert not any(label and "base instead" in str(label).lower() for label in labels)
 
 
@@ -305,7 +304,6 @@ def test_restore_ui_state_shares_prompts_and_skips_missing_files(tmp_path: Path)
         "edit_consistency_strength": 1.23,
         "edit_compile": True,
         "edit_mrflow": False,
-        "edit_teacache": True,
         "edit_depth_lock": True,
         "video_input": str(video_input),
         "video_output": "VIDEO_OUTPUT",
@@ -329,7 +327,6 @@ def test_restore_ui_state_shares_prompts_and_skips_missing_files(tmp_path: Path)
         "batch_consistency": True,
         "batch_consistency_strength": 0.45,
         "batch_compile": False,
-        "batch_teacache": True,
         "batch_mrflow": False,
         "t2i_output": "T2I_OUTPUT",
         "t2i_width": 512,
@@ -343,7 +340,6 @@ def test_restore_ui_state_shares_prompts_and_skips_missing_files(tmp_path: Path)
         "t2i_consistency_strength": 1.66,
         "t2i_compile": True,
         "t2i_mrflow": False,
-        "t2i_teacache": True,
         "upscale_image": str(upscale_image),
         "upscale_output": "UPSCALE_OUTPUT",
         "upscale_upscaler": "esrgan",
@@ -387,7 +383,6 @@ def test_restore_ui_state_shares_prompts_and_skips_missing_files(tmp_path: Path)
         True,
         False,
         True,
-        True,
         update(visible=True),
         update(visible=True),
         update(value=str(video_input)),
@@ -412,7 +407,6 @@ def test_restore_ui_state_shares_prompts_and_skips_missing_files(tmp_path: Path)
         True,
         update(value=0.45, visible=True),
         False,
-        True,
         False,
         "T2I_OUTPUT",
         512,
@@ -426,7 +420,6 @@ def test_restore_ui_state_shares_prompts_and_skips_missing_files(tmp_path: Path)
         update(value=1.66, visible=True),
         True,
         False,
-        True,
         update(value=str(upscale_image)),
         "UPSCALE_OUTPUT",
         "esrgan",
@@ -469,7 +462,6 @@ def test_restore_ui_state_shares_prompts_and_skips_missing_files(tmp_path: Path)
         "edit_consistency_strength",
         "edit_compile",
         "edit_mrflow",
-        "edit_teacache",
         "edit_depth_lock",
         "video_input",
         "video_output",
@@ -493,7 +485,6 @@ def test_restore_ui_state_shares_prompts_and_skips_missing_files(tmp_path: Path)
         "batch_consistency",
         "batch_consistency_strength",
         "batch_compile",
-        "batch_teacache",
         "batch_mrflow",
         "t2i_output",
         "t2i_width",
@@ -507,7 +498,6 @@ def test_restore_ui_state_shares_prompts_and_skips_missing_files(tmp_path: Path)
         "t2i_consistency_strength",
         "t2i_compile",
         "t2i_mrflow",
-        "t2i_teacache",
         "upscale_image",
         "upscale_output",
         "upscale_upscaler",
@@ -537,7 +527,7 @@ def test_t2i_handler_streams_preview_then_final(monkeypatch) -> None:
 
     monkeypatch.setattr(app, "run_t2i", fake_run_t2i)
 
-    events = list(app._t2i_handler("prompt", "negative", "out", 1024, 1024, 4, 1.0, 0, "int8", False, False, False, True))
+    events = list(app._t2i_handler("prompt", "negative", "out", 1024, 1024, 4, 1.0, 0, "int8", False, False, True, False))
 
     assert events[0] == (None, "preview-1", "Rendering preview...")
     assert events[1] == (None, "preview-2", "Rendering preview...")
@@ -593,99 +583,3 @@ def test_run_depth_edit_uses_requested_base_variant(monkeypatch, tmp_path: Path)
     assert result.preview_path is not None
     assert result.preview_path.read_text(encoding="utf-8") == "depth"
     assert result.image_path.read_text(encoding="utf-8") == "final"
-
-
-def test_run_depth_edit_forwards_teacache_to_depth_builder(monkeypatch, tmp_path: Path) -> None:
-    from comfyui_app import generation
-
-    recorded: dict[str, object] = {}
-
-    class FakeImage:
-        def __init__(self, name: str) -> None:
-            self.name = name
-
-        def save(self, path: Path) -> None:
-            Path(path).write_text(self.name, encoding="utf-8")
-
-    class FakeClient:
-        client_id = "client"
-
-        def upload_image(self, path: Path) -> str:
-            return f"uploaded:{Path(path).name}"
-
-        def wait_until_up(self, timeout: float = 0.0) -> None:
-            return None
-
-        def queue_prompt(self, prompt_dict, client_id=None) -> str:
-            recorded["diffusion_model"] = prompt_dict["1"]["inputs"]["unet_name"]
-            return "prompt-id"
-
-        def wait_for_completion(self, prompt_id, client_id=None, timeout: float = 0.0) -> None:
-            return None
-
-        def get_images(self, prompt_id: str):
-            return [FakeImage("depth"), FakeImage("final")]
-
-    def fake_depth_assets() -> tuple[str, str]:
-        recorded["depth_assets_called"] = True
-        return ("base.safetensors", "lora.safetensors")
-
-    def fake_resolved_filename_map(vram_gb: float, prefer_gguf: bool, engine: str) -> dict[str, str]:
-        return {"diffusion": "diff.safetensors", "text_encoder": "text.safetensors", "vae": "vae.safetensors"}
-
-    def fake_build_depth_refcontrol_edit_prompt(**kwargs):
-        recorded["build_kwargs"] = kwargs
-        return {"1": {"inputs": {"unet_name": kwargs["diffusion_model"]}}}
-
-    monkeypatch.setattr(generation, "_depth_control_assets", fake_depth_assets)
-    monkeypatch.setattr(generation, "_resolved_filename_map", fake_resolved_filename_map)
-    monkeypatch.setattr(generation, "detect_vram", lambda: (8.0, "RTX", True))
-    monkeypatch.setattr(generation, "build_depth_refcontrol_edit_prompt", fake_build_depth_refcontrol_edit_prompt)
-
-    result = generation.run_depth_edit(tmp_path / "input.png", None, "prompt", "negative", tmp_path, use_teacache=True, client=FakeClient())
-    assert recorded["depth_assets_called"] is True
-    assert recorded["build_kwargs"]["use_teacache"] is True
-    assert recorded["diffusion_model"] == "base.safetensors"
-    assert result.status.startswith("Saved image to ")
-    assert result.preview_path is not None
-    assert result.preview_path.read_text(encoding="utf-8") == "depth"
-    assert result.image_path.read_text(encoding="utf-8") == "final"
-
-
-def test_run_edit_forwards_teacache_flag(monkeypatch, tmp_path: Path) -> None:
-    from types import SimpleNamespace
-
-    from comfyui_app import generation
-
-    recorded: dict[str, object] = {}
-
-    class FakeClient:
-        client_id = "client"
-
-        def upload_image(self, path: Path) -> str:
-            return f"uploaded:{Path(path).name}"
-
-        def wait_until_up(self, timeout: float = 0.0) -> None:
-            return None
-
-    def fake_resolved_filename_map(vram_gb: float, prefer_gguf: bool, engine: str) -> dict[str, str]:
-        return {"diffusion": "diff.safetensors", "text_encoder": "text.safetensors", "vae": "vae.safetensors", "upscale": "upscale.pth"}
-
-    def fake_build_edit_prompt(**kwargs):
-        recorded["build_kwargs"] = kwargs
-        return {"1": {"inputs": {"unet_name": kwargs["diffusion_model"]}}}
-
-    def fake_run_prompt(client, prompt_dict, output_dir, output_name, timeout, preview_callback=None):
-        recorded["prompt_dict"] = prompt_dict
-        return GenerationResult(image_path=tmp_path / "result.png", status="ok")
-
-    monkeypatch.setattr(generation, "_resolved_filename_map", fake_resolved_filename_map)
-    monkeypatch.setattr(generation, "detect_vram", lambda: (8.0, "RTX", True))
-    monkeypatch.setattr(generation, "select_tier", lambda vram_gb: SimpleNamespace(use_tiled_decode=True))
-    monkeypatch.setattr(generation, "build_edit_prompt", fake_build_edit_prompt)
-    monkeypatch.setattr(generation, "_run_prompt", fake_run_prompt)
-
-    result = generation.run_edit(tmp_path / "input.png", "prompt", "negative", tmp_path, use_teacache=True, client=FakeClient())
-
-    assert recorded["build_kwargs"]["use_teacache"] is True
-    assert result.status == "ok"

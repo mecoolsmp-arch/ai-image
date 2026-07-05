@@ -97,145 +97,6 @@ def _install_sageattention() -> None:
     print("SageAttention install finished. On an RTX 3070, legacy kernels are expected; relaunch with Launch.bat.")
 
 
-def _install_teacache_support() -> None:
-    print("Trying to install the ComfyUI-TeaCache custom node...")
-    custom_nodes = COMFYUI_DIR / "custom_nodes"
-    custom_nodes.mkdir(parents=True, exist_ok=True)
-    target_dir = custom_nodes / "ComfyUI-TeaCache"
-    _install_custom_node("https://github.com/welltop-cn/ComfyUI-TeaCache.git", target_dir)
-    try:
-        nodes_py = target_dir / "nodes.py"
-        patched_import = _patch_teacache_lightricks_import(nodes_py)
-        patched_signature = _patch_teacache_flux_forward_signature(nodes_py)
-        if patched_import:
-            print("Patched TeaCache to tolerate current ComfyUI Lightricks imports.")
-        if patched_signature:
-            print("Patched TeaCache to accept ComfyUI v0.27.0 timestep_zero_index kwargs.")
-    except Exception as exc:
-        print(f"WARNING: The TeaCache patches could not be applied: {exc}")
-        print("TeaCache will keep working for Flux paths if the module still imports.")
-
-
-def _patch_teacache_lightricks_import(nodes_py: Path) -> bool:
-    if not nodes_py.exists():
-        return False
-    original = "from comfy.ldm.lightricks.model import precompute_freqs_cis"
-    patched = (
-        "try:\n"
-        "    from comfy.ldm.lightricks.model import precompute_freqs_cis\n"
-        "except ImportError:\n"
-        "    try:\n"
-        "        from comfy.ldm.lightricks.model import LTXBaseModel\n"
-        "        precompute_freqs_cis = LTXBaseModel.precompute_freqs_cis\n"
-        "    except (ImportError, AttributeError):\n"
-        "        def precompute_freqs_cis(*args, **kwargs):\n"
-        "            raise RuntimeError(\"TeaCache LTX-Video support needs precompute_freqs_cis, which is unavailable in this ComfyUI version.\")\n"
-    )
-    text = nodes_py.read_text(encoding="utf-8")
-    if patched in text:
-        return False
-    if original not in text:
-        return False
-    nodes_py.write_text(text.replace(original, patched, 1), encoding="utf-8")
-    return True
-
-
-def _patch_teacache_flux_forward_signature(nodes_py: Path) -> bool:
-    if not nodes_py.exists():
-        return False
-    text = nodes_py.read_text(encoding="utf-8")
-    match = re.search(r"def\s+teacache_flux_forward\s*\((.*?)\)\s*->\s*Tensor\s*:", text, re.DOTALL)
-    if match is None:
-        return False
-    signature_text = match.group(1)
-    if "timestep_zero_index" in signature_text and "**kwargs" in signature_text:
-        return False
-    parts = [part.strip().rstrip(",") for part in signature_text.split(",") if part.strip()]
-    if "timestep_zero_index" not in signature_text:
-        parts.append("timestep_zero_index=None")
-    if "**kwargs" not in signature_text:
-        parts.append("**kwargs")
-    patched_signature = "def teacache_flux_forward(\n    " + ",\n    ".join(parts) + "\n) -> Tensor:"
-    nodes_py.write_text(text[: match.start()] + patched_signature + text[match.end() :], encoding="utf-8")
-    return True
-
-
-def _load_env_lines(path: Path) -> dict[str, str]:
-    values: dict[str, str] = {}
-    if not path.exists():
-        return values
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        values[key.strip()] = value.strip().strip('"').strip("'")
-    return values
-
-
-def _save_token(token: str) -> None:
-    existing = _load_env_lines(DOTENV_PATH)
-    existing["HF_TOKEN"] = token
-    payload = "\n".join(f"{key}={value}" for key, value in existing.items()) + "\n"
-    DOTENV_PATH.write_text(payload, encoding="utf-8")
-    os.environ["HF_TOKEN"] = token
-
-
-def _get_token_from_user() -> str:
-    token = get_hf_token()
-    if token:
-        return token
-    print("A Hugging Face token is needed to download the model files.")
-    token = input("Paste your Hugging Face token and press Enter: ").strip()
-    if not token:
-        raise ModelResolverError("No Hugging Face token was provided.")
-    _save_token(token)
-    return token
-
-
-def _install_custom_node(repo_url: str, target_dir: Path) -> None:
-    _git_clone_or_pull(repo_url, target_dir)
-    requirements_file = target_dir / "requirements.txt"
-    if requirements_file.exists():
-        _install_requirements(requirements_file)
-
-
-def _install_experimental_speedups() -> None:
-    print("Experimental speedups are enabled. This step is optional and best effort.")
-    try:
-        custom_nodes = COMFYUI_DIR / "custom_nodes"
-        custom_nodes.mkdir(parents=True, exist_ok=True)
-        _install_custom_node("https://github.com/nunchaku-ai/ComfyUI-nunchaku.git", custom_nodes / "ComfyUI-nunchaku")
-    except Exception as exc:
-        print(f"WARNING: The Nunchaku custom node could not be prepared: {exc}")
-        print("You can still use the default INT8 workflow.")
-
-    try:
-        print("Trying to install the Nunchaku Python package...")
-        _run([sys.executable, "-m", "pip", "install", "--upgrade", "nunchaku"])
-    except Exception as exc:
-        print(f"WARNING: The Nunchaku package install did not finish: {exc}")
-        print("If you want to try the experimental path later, follow the Nunchaku releases page.")
-
-    try:
-        print("Trying to install the Windows Triton build for torch.compile...")
-        _run([sys.executable, "-m", "pip", "install", "--upgrade", "triton-windows"])
-    except Exception as exc:
-        print(f"WARNING: The Triton install did not finish: {exc}")
-        print("torch.compile requires Triton on Windows, so it will otherwise error.")
-
-    try:
-        _install_sageattention()
-    except Exception as exc:
-        print(f"WARNING: The SageAttention install did not finish: {exc}")
-        print("The app will keep working without SageAttention.")
-
-    try:
-        _install_teacache_support()
-    except Exception as exc:
-        print(f"WARNING: The TeaCache custom node could not be prepared: {exc}")
-        print("TeaCache will not be available until it is installed manually.")
-
 
 def _install_rtx_vsr_support() -> None:
     print("Trying to add the RTX video super-resolution node...")
@@ -292,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--with-experimental-speedups",
         action="store_true",
-        help="Also try the optional Nunchaku, SageAttention, Triton, and TeaCache speed paths.",
+        help="Also try the optional Nunchaku, SageAttention, Triton, speed paths.",
     )
     parser.add_argument(
         "--with-depth-control",
@@ -309,19 +170,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Install SageAttention in the active venv and exit.",
     )
-    parser.add_argument(
-        "--install-teacache",
-        action="store_true",
-        help="Install the ComfyUI-TeaCache custom node in ComfyUI/custom_nodes and exit.",
-    )
     args = parser.parse_args(argv)
 
     try:
-        if args.install_sageattention or args.install_teacache:
-            if args.install_sageattention:
-                _install_sageattention()
-            if args.install_teacache:
-                _install_teacache_support()
+        if args.install_sageattention:
+            _install_sageattention()
             return 0
         if not args.refresh_models:
             _git_clone_or_pull("https://github.com/comfyanonymous/ComfyUI.git", COMFYUI_DIR)

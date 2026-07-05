@@ -7,7 +7,6 @@ ComfyUI-based local image app for FLUX.2 Klein 4B on consumer NVIDIA GPUs.
 - `comfyui_app/` - the active app, workflow builders, resolver, and UI
 - `Install.bat` - first-time setup
 - `Install-SageAttention.bat` - install the matching SageAttention wheel
-- `Install-TeaCache.bat` - install the optional TeaCache custom node
 - `Launch.bat` - start ComfyUI and the Gradio UI
 - `Cleanup-Unused-Models.bat` - headless model cleanup
 - `Update.bat` - in-place update without rebuilding the Python environment
@@ -149,8 +148,6 @@ Sources:
 ## Optional speedups
 
 - **SageAttention 2** is optional and can be installed with `Install-SageAttention.bat`. `Install.bat --with-experimental-speedups` also installs the matching wheel automatically.
-- **TeaCache** is optional and experimental. Install it with `Install-TeaCache.bat`, or let `Install.bat --with-experimental-speedups` install the custom node for you.
-  - After re-running `Install-TeaCache.bat`, the node is patched to accept ComfyUI v0.27.0's `timestep_zero_index` kwarg, so TeaCache no longer crashes on edit, batch, or depth. The patch accepts-and-ignores that arg, so reference-latent behavior may differ slightly; TeaCache still only helps on high-step runs (20+), and does almost nothing at the distilled Klein 4B default of ~4 steps.
 - **Nunchaku INT4** is experimental but can be much faster. Use the `tonera/FLUX.2-klein-4B-Nunchaku` INT4 checkpoint and the experimental installer path if you want to try it.
 - **torch.compile** is available in the UI. It requires Triton on Windows, which is installed via the experimental speedups path (`--with-experimental-speedups`). The gain on Ampere is limited, but it can help after warmup. The first run is slower and resolution changes recompile.
 
